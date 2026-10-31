@@ -1,0 +1,30 @@
+
+# Dependencies
+node_modules/
+FE/node_modules/
+BE/notify/node_modules/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+
+# Build files
+dist/
+build/
+
+# Compiled backend files
+*.exe
+*.o
+*.dll
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor and OS files
+.vscode/
+.DS_Store
+Thumbs.db
