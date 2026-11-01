@@ -26,6 +26,19 @@ struct AccidentEvent
     bool processed;
 };
 
+// Priority Queue: Higher impact score gets higher priority.
+struct ComparePriority
+{
+    bool operator()(const AccidentEvent &a,
+                    const AccidentEvent &b)
+    {
+        return a.impactScore < b.impactScore;
+    }
+};
+
+priority_queue<AccidentEvent, vector<AccidentEvent>,
+               ComparePriority> priorityAccidentQueue;
+
 // Queue: processes accident events in FIFO order.
 queue<AccidentEvent> accidentQueue;
 
@@ -44,6 +57,23 @@ const size_t MAX_HISTORY = 100;
 unsigned long processedAccidentEvents = 0;
 unsigned long totalEnqueuedEvents = 0;
 
+// Update Priority Queue with pending accidents.
+void updatePriorityQueue()
+{
+    while (!priorityAccidentQueue.empty())
+    {
+        priorityAccidentQueue.pop();
+    }
+
+    for (const auto &event : accidentHistory)
+    {
+        if (!event.processed)
+        {
+            priorityAccidentQueue.push(event);
+        }
+    }
+}
+
 string getCurrentTimestamp()
 {
     time_t now = time(nullptr);
@@ -57,51 +87,46 @@ string getCurrentTimestamp()
     return timestamp;
 }
 
-// Decision Tree: classifies accident severity.
-string decisionTree(int score)
+// Binary Decision Tree
+struct TreeNode
 {
-    if (score >= 75)
+    int threshold;
+    string result;
+    int yes;
+    int no;
+};
+
+// Tree nodes
+TreeNode severityTree[] =
+{
+    {75, "", 1, 2},
+    {0, "Severe", -1, -1},
+    {42, "", 3, 4},
+    {0, "Moderate", -1, -1},
+    {18, "", 5, 6},
+    {0, "Minor", -1, -1},
+    {0, "No Accident", -1, -1}
+};
+
+// Traverse the tree recursively
+string decisionTree(int score, int node = 0)
+{
+    if (severityTree[node].result != "")
     {
-        return "Severe";
+        return severityTree[node].result;
     }
-    else if (score >= 42)
+
+    if (score >= severityTree[node].threshold)
     {
-        return "Moderate";
+        return decisionTree(score, severityTree[node].yes);
     }
-    else if (score >= 18)
-    {
-        return "Minor";
-    }
-    else
-    {
-        return "No Accident";
-    }
+
+    return decisionTree(score, severityTree[node].no);
 }
 
-// Keep only the 20 most recent severe events.
+// Store severe accident in Stack
 void pushSevereEvent(const AccidentEvent &event)
 {
-    vector<AccidentEvent> temporary;
-
-    while (!severeAccidentStack.empty())
-    {
-        temporary.push_back(severeAccidentStack.top());
-        severeAccidentStack.pop();
-    }
-
-    // The last item is the oldest event.
-    if (temporary.size() >= 20)
-    {
-        temporary.pop_back();
-    }
-
-    // Rebuild the stack in its original order.
-    for (vector<AccidentEvent>::reverse_iterator it = temporary.rbegin();
-         it != temporary.rend(); ++it)
-    {
-        severeAccidentStack.push(*it);
-    }
-
     severeAccidentStack.push(event);
 }
 
@@ -160,6 +185,18 @@ string processRequest(const string &request)
 if (headers.find("GET /api/dsa/status ") == 0)
 {
     string latestSevereEvent = "null";
+
+    string highestPriorityEvent = "null";
+
+    if (!priorityAccidentQueue.empty())
+    {
+        AccidentEvent highest = priorityAccidentQueue.top();
+
+        highestPriorityEvent =
+            "{\"id\":" + to_string(highest.id) +
+            ",\"impactScore\":" + to_string(highest.impactScore) +
+            ",\"severity\":\"" + highest.severity + "\"}";
+    }
 
     if (!severeAccidentStack.empty())
     {
@@ -235,7 +272,8 @@ if (headers.find("GET /api/dsa/status ") == 0)
         ",\"totalEnqueuedEvents\":" + to_string(totalEnqueuedEvents) +
         ",\"latestSevereEvent\":" + latestSevereEvent +
         ",\"queueEvents\":" + queueEvents +
-        ",\"stackEvents\":" + stackEvents + "}";
+        ",\"stackEvents\":" + stackEvents +
+        ",\"highestPriorityEvent\":" + highestPriorityEvent + "}";
 
     return getResponse(200, status);
 }
@@ -294,6 +332,7 @@ if (headers.find("GET /api/accidents/history ") == 0) {
         }
 
         processedAccidentEvents++;
+        updatePriorityQueue();
 
         // Store severe events in the LIFO stack.
         if (currentEvent.severity == "Severe")
@@ -329,6 +368,13 @@ if (headers.find("GET /api/accidents/history ") == 0) {
     // Read speeds from the JSON request body.
     double speedA = readSpeed(body, "speedA");
     double speedB = readSpeed(body, "speedB");
+    double impactG = readSpeed(body, "impactG");
+
+    // Use 0 when the frontend does not send impactG yet.
+if (impactG < 0)
+{
+    impactG = 0;
+}
 
     // Read more bytes if the request body is incomplete.
     size_t contentPos = headers.find("Content-Length:");
@@ -348,15 +394,25 @@ if (headers.find("GET /api/accidents/history ") == 0) {
         }
     }
 
-    if (speedA < 0 || speedB < 0 ||
-        speedA > 300 || speedB > 300)
-    {
-        return getResponse(400,
-                           R"({"error":"Provide speedA and speedB between 0 and 300"})");
-    }
+    // Validate speed and impact sensor readings.
+if (speedA < 0 || speedB < 0 ||
+    speedA > 300 || speedB > 300 ||
+    impactG < 0 || impactG > 10)
+{
+    return getResponse(400,
+        R"({"error":"Speeds must be 0-300 and impactG must be 0-10"})");
+}
 
-    int score = min(100, static_cast<int>((speedA + speedB) * 1.25));
+// Calculate speed-based score.
+int speedScore = min(100, static_cast<int>((speedA + speedB) * 1.25));
 
+// Calculate impact-based score.
+int impactScore = min(100, static_cast<int>(impactG * 10));
+
+// Combine both readings.
+int score = min(100, static_cast<int>(
+    speedScore * 0.7 + impactScore * 0.3
+));
     // Decision Tree classification
     string severity = decisionTree(score);
 
@@ -380,6 +436,7 @@ if (headers.find("GET /api/accidents/history ") == 0) {
     }
 
     accidentHistory.push_back(newEvent);
+    updatePriorityQueue();
 
     totalEnqueuedEvents++;
 
@@ -387,8 +444,7 @@ if (headers.find("GET /api/accidents/history ") == 0) {
          << " | Severity: " << newEvent.severity
          << " | Status: Pending" << endl;
 
-    bool alert = score >= 18;
-
+bool alert = (severity == "Severe");
     string result =
         "{\"success\":true,"
         "\"impactScore\":" +
