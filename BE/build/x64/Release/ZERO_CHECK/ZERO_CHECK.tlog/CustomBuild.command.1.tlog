@@ -1,0 +1,10 @@
+^D:\ACCIDENT DETECTION\BE\BUILD\CMAKEFILES\100EFA9F312F8881725CD2DFDEF9D320\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" "-SD:/ACCIDENT DETECTION/BE" "-BD:/ACCIDENT DETECTION/BE/build" --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file "D:/ACCIDENT DETECTION/BE/build/SmartAccidentDetection.slnx"
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

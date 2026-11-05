@@ -1,30 +1,15 @@
+@'
 
-# Dependencies
-node_modules/
-FE/node_modules/
-BE/notify/node_modules/
+# Python AI environment
+AI/venv/
+AI/**/__pycache__/
+*.py[cod]
 
-# Environment variables and secrets
-.env
-.env.*
-!.env.example
-**/.env
-**/.env.*
-
-# Build files
-dist/
-build/
-
-# Compiled backend files
-*.exe
-*.o
-*.dll
-
-# Logs
-*.log
-npm-debug.log*
-
-# Editor and OS files
-.vscode/
-.DS_Store
-Thumbs.db
+# AI generated files and large models
+AI/models/*.onnx
+AI/models/*.pt
+AI/videos/*
+!AI/videos/.gitkeep
+AI/output/*
+!AI/output/.gitkeep
+'@ | Add-Content .gitignore

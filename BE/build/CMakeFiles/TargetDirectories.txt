@@ -1,0 +1,3 @@
+D:/ACCIDENT DETECTION/BE/build/CMakeFiles/accident_backend.dir
+D:/ACCIDENT DETECTION/BE/build/CMakeFiles/ALL_BUILD.dir
+D:/ACCIDENT DETECTION/BE/build/CMakeFiles/ZERO_CHECK.dir
