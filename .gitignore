@@ -13,5 +13,7 @@ AI/videos/*
 AI/output/*
 !AI/output/.gitkeep
 '@ | Add-Content .gitignore
+Add-Content .gitignore "`nFE/node_modules/"
+Add-Content .gitignore "BE/notify/node_modules/"
 FE/node_modules/
 BE/notify/node_modules/
