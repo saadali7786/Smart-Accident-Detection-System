@@ -13,3 +13,5 @@ AI/videos/*
 AI/output/*
 !AI/output/.gitkeep
 '@ | Add-Content .gitignore
+FE/node_modules/
+BE/notify/node_modules/
