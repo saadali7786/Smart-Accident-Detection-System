@@ -7,6 +7,12 @@ stored in PostgreSQL. Accident and vehicle data are restored when the backend
 starts. The in-memory FIFO queue, severe-event stack, and priority queue remain
 the DSA processing structures.
 
+Reapplying `schema.sql` adds the AI event metadata columns and unique
+`ai_event_id` index to an existing `accidents` table. AI event retries use this
+unique ID; PostgreSQL `ON CONFLICT` returns the existing accident rather than
+creating a second DSA/history record. In memory-only mode the same ID is
+deduplicated for the lifetime of the backend process.
+
 If PostgreSQL is not configured, the backend prints a warning and runs in
 memory-only mode. That mode is for the existing prototype and does not provide
 persistence. If PostgreSQL environment variables are supplied but the database
@@ -105,6 +111,10 @@ override it for local testing or deployment.
   GPS point from PostgreSQL.
 - Existing `POST /api/accident` stores the accident before adding it to the
   in-memory DSA structures.
+- `POST /api/ai/event` accepts validated, classified AI events while preserving
+  their video timestamp, vehicle IDs, confidence, event type, evidence, and
+  optional GPS coordinates. It does not interpret video-only input as a
+  confirmed collision.
 - Existing `GET /api/accidents/history` reads the complete persisted history.
 - Existing `POST /api/dsa/process` persists the processed status before
   dequeuing the incident.
@@ -130,3 +140,64 @@ record per active vehicle.
 PostgreSQL persistence and restart recovery require libpq at build time, a
 running PostgreSQL server, the environment variables above, and the schema
 applied to the selected database.
+
+## AI event forwarding and DSA ordering
+
+The Python video analyzer submits only `suspected_accident` events or
+`potential_accident` events carrying a numeric confidence score at or above
+`AI_FORWARD_CONFIDENCE_THRESHOLD` (default `0.8`). Normal traffic, uncertain
+events, and below-threshold potentials are not sent. The current analyzer's
+confidence labels are categorical, not calibrated numeric scores, so only its
+suspected classifications pass today. Configure the same threshold in both
+processes if changing it.
+
+`POST /api/ai/event` accepts an event ID, the analyzer timestamp, vehicle IDs,
+confidence, classification/event type, evidence, and optional GPS coordinates.
+The backend rejects video-only confirmation, stores AI indicators as
+`Potential Accident` or `Suspected Accident`, and never applies the simulator's
+collision severity formula to AI events. A stable event ID is scoped to a
+unique detection run; request retries reuse it. The in-memory ID map prevents
+duplicate DSA inserts during the process lifetime, while the database unique
+index on `ai_event_id` also protects retries across restarts and concurrent
+backend instances.
+
+AI delivery uses a bounded background queue, a 0.5-second HTTP timeout by
+default, and at most three attempts. A full queue or offline backend is
+reported by `/api/ai/backend-forwarding-status`; it does not hold up video
+analysis. Set `AI_BACKEND_URL`, `AI_BACKEND_TIMEOUT_SECONDS`, and
+`AI_FORWARD_CONFIDENCE_THRESHOLD` in the AI process environment as needed.
+
+DSA contracts:
+
+- `GET /api/dsa/status` returns arrival-order FIFO events, the severe-event
+  stack (newest first), pending priority order, in-memory history (oldest
+  retained first), and event counters.
+- `POST /api/dsa/process` processes the oldest pending event and removes it
+  from all pending structures.
+- `POST /api/dsa/process-priority` processes the highest-priority pending
+  event. Priority order is `Severe` > `Moderate` > `Suspected Accident` >
+  `Minor` > `Potential Accident`/other, then descending impact score, then
+  ascending event ID for deterministic ties.
+- The vector retains the latest 100 events in memory. PostgreSQL-backed
+  `GET /api/accidents/history` continues to return persisted history.
+
+The Windows C++ API and frontend can be started from the repository root in
+separate terminals:
+
+```powershell
+cmake --build .\BE\build --config Release
+.\BE\build\Release\accident_backend.exe
+
+Set-Location .\FE
+npm run dev -- --host 127.0.0.1
+```
+
+Start the Python AI API from the repository root in another terminal:
+
+```powershell
+.\AI\venv\Scripts\python.exe -m uvicorn AI.api:app --host 127.0.0.1 --port 5001
+```
+
+For AI forwarding, start the C++ backend before detection. Without it, the
+bounded forwarder reports delivery failures while the Python video analysis
+continues. No real emergency services are contacted.

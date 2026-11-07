@@ -21,6 +21,11 @@ struct PersistedAccident
     int impactScore;
     std::string severity;
     std::string timestamp;
+    std::string sourceEventId;
+    std::string eventType;
+    std::string confidenceJson;
+    std::string vehicleIdsJson;
+    std::string evidenceJson;
     double latitude;
     double longitude;
     bool hasLocation;
@@ -46,6 +51,16 @@ public:
                         const std::string &collisionType, bool hasLocation,
                         double latitude, double longitude, std::uint64_t &id,
                         std::string &error);
+    bool insertAiAccident(const std::string &eventId,
+                          const std::string &timestamp,
+                          const std::string &eventType,
+                          const std::string &severity,
+                          const std::string &confidenceJson,
+                          const std::string &vehicleIdsJson,
+                          const std::string &evidenceJson,
+                          bool hasLocation, double latitude,
+                          double longitude, std::uint64_t &id,
+                          bool &inserted, std::string &error);
     bool updateAccidentProcessed(std::uint64_t id, std::string &error);
     bool insertSensorReading(const std::string &vehicleId,
                              double accelerationX, double accelerationY,

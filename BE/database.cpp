@@ -161,8 +161,8 @@ bool PostgresDatabase::insertAccident(int impactScore,
     PGresult *result = PQexecParams(
         static_cast<PGconn *>(connection_),
         "INSERT INTO accidents "
-        "(impact_score, severity, collision_type, latitude, longitude) "
-        "VALUES ($1::integer, $2, $3, $4::double precision, "
+        "(impact_score, severity, collision_type, event_type, latitude, longitude) "
+        "VALUES ($1::integer, $2, $3, $3, $4::double precision, "
         "$5::double precision) RETURNING id",
         5, nullptr, values, nullptr, nullptr, 0);
     if (result == nullptr || PQresultStatus(result) != PGRES_TUPLES_OK ||
@@ -186,6 +186,84 @@ bool PostgresDatabase::insertAccident(int impactScore,
     (void)latitude;
     (void)longitude;
     (void)id;
+    error = "PostgreSQL support is not available in this build.";
+    return false;
+#endif
+}
+
+bool PostgresDatabase::insertAiAccident(
+    const std::string &eventId, const std::string &timestamp,
+    const std::string &eventType, const std::string &severity,
+    const std::string &confidenceJson,
+    const std::string &vehicleIdsJson, const std::string &evidenceJson,
+    bool hasLocation, double latitude, double longitude, std::uint64_t &id,
+    bool &inserted, std::string &error)
+{
+#ifdef SAD_WITH_POSTGRESQL
+    const std::string latitudeText = std::to_string(latitude);
+    const std::string longitudeText = std::to_string(longitude);
+    const char *values[] = {
+        eventId.c_str(), timestamp.c_str(), eventType.c_str(),
+        confidenceJson.c_str(), vehicleIdsJson.c_str(), evidenceJson.c_str(),
+        hasLocation ? latitudeText.c_str() : nullptr,
+        hasLocation ? longitudeText.c_str() : nullptr, severity.c_str()};
+    PGconn *connection = static_cast<PGconn *>(connection_);
+    PGresult *result = PQexecParams(
+        connection,
+        "INSERT INTO accidents "
+        "(impact_score, severity, collision_type, event_type, ai_event_id, "
+        "event_timestamp, confidence_json, vehicle_ids, evidence, latitude, longitude) "
+        "VALUES (0, $9, 'ai', $3, $1, $2, $4::jsonb, "
+        "$5::jsonb, $6::jsonb, $7::double precision, $8::double precision) "
+        "ON CONFLICT (ai_event_id) DO NOTHING RETURNING id",
+        9, nullptr, values, nullptr, nullptr, 0);
+    if (result == nullptr || PQresultStatus(result) != PGRES_TUPLES_OK)
+    {
+        error = result == nullptr ? PQerrorMessage(connection)
+                                 : PQresultErrorMessage(result);
+        if (result != nullptr) PQclear(result);
+        return false;
+    }
+
+    inserted = PQntuples(result) == 1;
+    if (inserted)
+    {
+        id = static_cast<std::uint64_t>(
+            std::strtoull(PQgetvalue(result, 0, 0), nullptr, 10));
+        PQclear(result);
+        return true;
+    }
+    PQclear(result);
+
+    const char *lookupValues[] = {eventId.c_str()};
+    result = PQexecParams(
+        connection, "SELECT id::text FROM accidents WHERE ai_event_id = $1",
+        1, nullptr, lookupValues, nullptr, nullptr, 0);
+    if (result == nullptr || PQresultStatus(result) != PGRES_TUPLES_OK ||
+        PQntuples(result) != 1)
+    {
+        error = result == nullptr ? PQerrorMessage(connection)
+                                 : PQresultErrorMessage(result);
+        if (result != nullptr) PQclear(result);
+        return false;
+    }
+    id = static_cast<std::uint64_t>(
+        std::strtoull(PQgetvalue(result, 0, 0), nullptr, 10));
+    PQclear(result);
+    return true;
+#else
+    (void)eventId;
+    (void)timestamp;
+    (void)eventType;
+    (void)severity;
+    (void)confidenceJson;
+    (void)vehicleIdsJson;
+    (void)evidenceJson;
+    (void)hasLocation;
+    (void)latitude;
+    (void)longitude;
+    (void)id;
+    (void)inserted;
     error = "PostgreSQL support is not available in this build.";
     return false;
 #endif
@@ -326,8 +404,10 @@ bool PostgresDatabase::loadAccidents(
     PGresult *result = PQexec(
         static_cast<PGconn *>(connection_),
         "SELECT id::text, impact_score::text, severity, "
-        "to_char(detected_at, 'YYYY-MM-DD HH24:MI:SS TZ'), "
-        "latitude::text, longitude::text, status "
+        "COALESCE(event_timestamp, to_char(detected_at, "
+        "'YYYY-MM-DD HH24:MI:SS TZ')), COALESCE(ai_event_id, ''), "
+        "COALESCE(event_type, ''), confidence_json::text, vehicle_ids::text, "
+        "evidence::text, latitude::text, longitude::text, status "
         "FROM accidents ORDER BY id");
     if (result == nullptr || PQresultStatus(result) != PGRES_TUPLES_OK)
     {
@@ -346,15 +426,20 @@ bool PostgresDatabase::loadAccidents(
         accident.impactScore = std::atoi(PQgetvalue(result, row, 1));
         accident.severity = PQgetvalue(result, row, 2);
         accident.timestamp = PQgetvalue(result, row, 3);
+        accident.sourceEventId = PQgetvalue(result, row, 4);
+        accident.eventType = PQgetvalue(result, row, 5);
+        accident.confidenceJson = PQgetvalue(result, row, 6);
+        accident.vehicleIdsJson = PQgetvalue(result, row, 7);
+        accident.evidenceJson = PQgetvalue(result, row, 8);
         accident.hasLocation =
-            !PQgetisnull(result, row, 4) && !PQgetisnull(result, row, 5);
+            !PQgetisnull(result, row, 9) && !PQgetisnull(result, row, 10);
         accident.latitude = accident.hasLocation
-                                ? std::strtod(PQgetvalue(result, row, 4), nullptr)
+                                ? std::strtod(PQgetvalue(result, row, 9), nullptr)
                                 : 0;
         accident.longitude = accident.hasLocation
-                                 ? std::strtod(PQgetvalue(result, row, 5), nullptr)
+                                 ? std::strtod(PQgetvalue(result, row, 10), nullptr)
                                  : 0;
-        accident.processed = std::string(PQgetvalue(result, row, 6)) == "Processed";
+        accident.processed = std::string(PQgetvalue(result, row, 11)) == "Processed";
         accidents.push_back(accident);
     }
     PQclear(result);

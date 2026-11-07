@@ -4,6 +4,9 @@
     <ClCompile Include="D:\ACCIDENT DETECTION\BE\main.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="D:\ACCIDENT DETECTION\BE\database.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <CustomBuild Include="D:\ACCIDENT DETECTION\BE\CMakeLists.txt" />

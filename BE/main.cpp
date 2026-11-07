@@ -3,18 +3,27 @@
 #define NOMINMAX
 
 #include "database.h"
+#include "json_parser.h"
 
 #include <iostream>
 #include <algorithm>
 #include <vector>
 #include <stack>
 #include <queue>
+#include <unordered_map>
+#include <mutex>
+#include <thread>
 #include <ctime>
 #include <cmath>
 #include <string>
 #include <sstream>
 #include <cstdint>
 #include <cstdlib>
+#include <cctype>
+#include <atomic>
+#include <limits>
+#include <iterator>
+#include <system_error>
 #include <winsock2.h>
 #include <ws2tcpip.h>
 
@@ -35,14 +44,44 @@ struct AccidentEvent
     bool hasLocation;
 
     bool processed;
+    string sourceEventId;
+    string eventType;
+    string confidenceJson;
+    string vehicleIdsJson;
+    string evidenceJson;
 };
 
-// Priority Queue: Higher impact score gets higher priority.
+int priorityRank(const AccidentEvent &event)
+{
+    if (event.severity == "Severe")
+        return 4;
+    if (event.severity == "Moderate")
+        return 3;
+    if (event.severity == "Suspected Accident")
+        return 2;
+    if (event.eventType == "confirmed_accident")
+        return 4;
+    if (event.severity == "Minor")
+        return 1;
+    if (event.severity == "Potential Accident")
+        return 0;
+    if (event.eventType == "suspected_accident")
+        return 2;
+    if (event.eventType == "potential_accident")
+        return 0;
+    return 0;
+}
+
+// Severity rank, then impact score, then older ID; the ordering is deterministic.
 struct ComparePriority
 {
-    bool operator()(const AccidentEvent &a, const AccidentEvent &b)
+    bool operator()(const AccidentEvent &a, const AccidentEvent &b) const
     {
-        return a.impactScore < b.impactScore;
+        if (priorityRank(a) != priorityRank(b))
+            return priorityRank(a) < priorityRank(b);
+        if (a.impactScore != b.impactScore)
+            return a.impactScore < b.impactScore;
+        return a.id > b.id;
     }
 };
 
@@ -65,6 +104,9 @@ const size_t MAX_HISTORY = 100;
 
 unsigned long processedAccidentEvents = 0;
 unsigned long totalEnqueuedEvents = 0;
+unordered_map<string, std::uint64_t> seenAIEventIds;
+mutex requestMutex;
+double aiForwardConfidenceThreshold = 0.8;
 
 // ================= REGISTERED VEHICLE TRACKING =================
 
@@ -153,6 +195,7 @@ bool loadPersistentState(std::string &error)
     processedAccidentEvents = 0;
     totalEnqueuedEvents = 0;
     nextAccidentId = 1;
+    seenAIEventIds.clear();
 
     for (const PersistedAccident &stored : accidents)
     {
@@ -165,18 +208,27 @@ bool loadPersistentState(std::string &error)
         event.longitude = stored.longitude;
         event.hasLocation = stored.hasLocation;
         event.processed = stored.processed;
+        event.sourceEventId = stored.sourceEventId;
+        event.eventType = stored.eventType;
+        event.confidenceJson = stored.confidenceJson;
+        event.vehicleIdsJson = stored.vehicleIdsJson;
+        event.evidenceJson = stored.evidenceJson;
+        if (!event.sourceEventId.empty())
+        {
+            seenAIEventIds[event.sourceEventId] = event.id;
+        }
 
         if (event.processed)
         {
             ++processedAccidentEvents;
-            if (event.severity == "Severe")
-            {
-                pushSevereEvent(event);
-            }
         }
         else
         {
             accidentQueue.push(event);
+        }
+        if (event.severity == "Severe")
+        {
+            pushSevereEvent(event);
         }
         ++totalEnqueuedEvents;
 
@@ -273,14 +325,67 @@ void pushSevereEvent(const AccidentEvent &event)
     severeAccidentStack.push(event);
 }
 
+string eventJson(const AccidentEvent &event)
+{
+    const string confidence =
+        event.confidenceJson.empty() ? "null" : event.confidenceJson;
+    const string vehicleIds =
+        event.vehicleIdsJson.empty() ? "[]" : event.vehicleIdsJson;
+    const string evidence =
+        event.evidenceJson.empty() ? "[]" : event.evidenceJson;
+    return
+        "{\"id\":" + to_string(event.id) +
+        ",\"eventId\":" + jsonEscape(event.sourceEventId) +
+        ",\"impactScore\":" + to_string(event.impactScore) +
+        ",\"severity\":" + jsonEscape(event.severity) +
+        ",\"timestamp\":" + jsonEscape(event.timestamp) +
+        ",\"eventType\":" + jsonEscape(event.eventType) +
+        ",\"confidence\":" + confidence +
+        ",\"vehicleIds\":" + vehicleIds +
+        ",\"evidence\":" + evidence +
+        ",\"hasLocation\":" + string(event.hasLocation ? "true" : "false") +
+        ",\"latitude\":" +
+        (event.hasLocation ? to_string(event.latitude) : "null") +
+        ",\"longitude\":" +
+        (event.hasLocation ? to_string(event.longitude) : "null") +
+        ",\"status\":" +
+        jsonEscape(event.processed ? "Processed" : "Pending") + "}";
+}
+
+AccidentEvent fromPersistedAccident(const PersistedAccident &stored)
+{
+    AccidentEvent event{};
+    event.id = stored.id;
+    event.impactScore = stored.impactScore;
+    event.severity = stored.severity;
+    event.timestamp = stored.timestamp;
+    event.latitude = stored.latitude;
+    event.longitude = stored.longitude;
+    event.hasLocation = stored.hasLocation;
+    event.processed = stored.processed;
+    event.sourceEventId = stored.sourceEventId;
+    event.eventType = stored.eventType;
+    event.confidenceJson = stored.confidenceJson;
+    event.vehicleIdsJson = stored.vehicleIdsJson;
+    event.evidenceJson = stored.evidenceJson;
+    return event;
+}
+
 string getResponse(int status, const string &body)
 {
+    const char *statusText =
+        status == 200 ? "OK" :
+        status == 201 ? "Created" :
+        status == 202 ? "Accepted" :
+        status == 400 ? "Bad Request" :
+        status == 404 ? "Not Found" :
+        status == 409 ? "Conflict" :
+        status == 413 ? "Payload Too Large" :
+        status == 503 ? "Service Unavailable" :
+                        "Internal Server Error";
     stringstream response;
     response << "HTTP/1.1 " << status
-             << (status == 200 ? " OK"
-                               : status == 400 ? " Bad Request"
-                                               : status == 503 ? " Service Unavailable"
-                                                               : " Internal Server Error")
+             << " " << statusText
              << "\r\n"
              << "Content-Type: application/json\r\n"
              << "Access-Control-Allow-Origin: *\r\n"
@@ -292,91 +397,27 @@ string getResponse(int status, const string &body)
     return response.str();
 }
 
-double readSpeed(const string &body, const string &key)
+bool readJsonNumber(const JsonValue &body, const string &key, double &value)
 {
-    size_t pos = body.find("\"" + key + "\"");
-    if (pos == string::npos)
-        return -1;
-
-    pos = body.find(':', pos);
-    if (pos == string::npos)
-        return -1;
-
-    try
-    {
-        return stod(body.substr(pos + 1));
-    }
-    catch (...)
-    {
-        return -1;
-    }
+    const JsonValue *member = jsonMember(body, key);
+    if (member == nullptr || member->type != JsonValue::Type::Number ||
+        !std::isfinite(member->number))
+        return false;
+    value = member->number;
+    return true;
 }
 
-bool readFiniteNumber(const string &body, const string &key, double &value)
+string readJsonString(const JsonValue &body, const string &key)
 {
-    const size_t keyPosition = body.find("\"" + key + "\"");
-    if (keyPosition == string::npos)
-    {
-        return false;
-    }
-
-    const size_t colon = body.find(':', keyPosition);
-    if (colon == string::npos)
-    {
-        return false;
-    }
-
-    const char *start = body.c_str() + colon + 1;
-    while (*start == ' ' || *start == '\t' || *start == '\r' || *start == '\n')
-    {
-        ++start;
-    }
-    if (*start != '-' && (*start < '0' || *start > '9'))
-    {
-        return false;
-    }
-
-    char *end = nullptr;
-    value = std::strtod(start, &end);
-    if (end == start || !std::isfinite(value))
-    {
-        return false;
-    }
-    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n')
-    {
-        ++end;
-    }
-    return *end == ',' || *end == '}';
-}
-
-// Read a string value from JSON.
-string readString(const string &body, const string &key)
-{
-    size_t pos = body.find("\"" + key + "\"");
-
-    if (pos == string::npos)
-        return "";
-
-    pos = body.find(':', pos);
-
-    if (pos == string::npos)
-        return "";
-
-    pos = body.find('"', pos);
-
-    if (pos == string::npos)
-        return "";
-
-    size_t end = body.find('"', pos + 1);
-
-    if (end == string::npos)
-        return "";
-
-    return body.substr(pos + 1, end - pos - 1);
+    const JsonValue *member = jsonMember(body, key);
+    return member != nullptr && member->type == JsonValue::Type::String
+               ? member->string
+               : "";
 }
 
 string processRequest(const string &request)
 {
+    std::lock_guard<std::mutex> requestLock(requestMutex);
     size_t headerEnd = request.find("\r\n\r\n");
     if (headerEnd == string::npos)
     {
@@ -391,98 +432,109 @@ string processRequest(const string &request)
         return getResponse(200, "{}");
     }
 
+    JsonValue requestJson;
+    const bool isPost = headers.find("POST ") == 0;
+    if (isPost)
+    {
+        const bool processingEndpoint =
+            headers.find("POST /api/dsa/process ") == 0 ||
+            headers.find("POST /api/dsa/process-priority ") == 0;
+        const bool bodyOptional = processingEndpoint && body.empty();
+        if (body.size() > 1024 * 1024)
+        {
+            return getResponse(
+                413, R"({"success":false,"error":"JSON request body exceeds 1 MB"})");
+        }
+        try
+        {
+            requestJson = JsonParser(bodyOptional ? "{}" : body).parse();
+            if (requestJson.type != JsonValue::Type::Object)
+            {
+                return getResponse(
+                    400, R"({"success":false,"error":"JSON request body must be an object"})");
+            }
+        }
+        catch (const std::exception &)
+        {
+            return getResponse(
+                400, R"({"success":false,"error":"Malformed JSON request body"})");
+        }
+    }
+
     // DSA status endpoint
     if (headers.find("GET /api/dsa/status ") == 0)
     {
-        string latestSevereEvent = "null";
-
-        string highestPriorityEvent = "null";
-
-        if (!priorityAccidentQueue.empty())
-        {
-            AccidentEvent highest = priorityAccidentQueue.top();
-
-            highestPriorityEvent =
-                "{\"id\":" + to_string(highest.id) +
-                ",\"impactScore\":" + to_string(highest.impactScore) +
-                ",\"severity\":\"" + highest.severity + "\"}";
-        }
-
-        if (!severeAccidentStack.empty())
-        {
-            AccidentEvent latest = severeAccidentStack.top();
-
-            latestSevereEvent =
-                "{\"id\":" + to_string(latest.id) +
-                ",\"impactScore\":" + to_string(latest.impactScore) +
-                ",\"severity\":\"" + latest.severity + "\"" +
-                ",\"timestamp\":\"" + latest.timestamp + "\"}";
-        }
-
-        // Copy Queue to display its contents without removing events.
-        queue<AccidentEvent> queueCopy = accidentQueue;
-
         string queueEvents = "[";
-
-        bool firstQueueEvent = true;
-
+        queue<AccidentEvent> queueCopy = accidentQueue;
+        bool first = true;
         while (!queueCopy.empty())
         {
-            AccidentEvent event = queueCopy.front();
+            if (!first) queueEvents += ",";
+            first = false;
+            queueEvents += eventJson(queueCopy.front());
             queueCopy.pop();
-
-            if (!firstQueueEvent)
-            {
-                queueEvents += ",";
-            }
-
-            queueEvents +=
-                "{\"id\":" + to_string(event.id) +
-                ",\"impactScore\":" + to_string(event.impactScore) +
-                ",\"severity\":\"" + event.severity + "\"" +
-                ",\"timestamp\":\"" + event.timestamp + "\"}";
-
-            firstQueueEvent = false;
         }
-
         queueEvents += "]";
 
-        // Copy Stack to display its contents without removing events.
-        stack<AccidentEvent> stackCopy = severeAccidentStack;
-
         string stackEvents = "[";
-
-        bool firstStackEvent = true;
-
+        stack<AccidentEvent> stackCopy = severeAccidentStack;
+        first = true;
         while (!stackCopy.empty())
         {
-            AccidentEvent event = stackCopy.top();
+            if (!first) stackEvents += ",";
+            first = false;
+            stackEvents += eventJson(stackCopy.top());
             stackCopy.pop();
-
-            if (!firstStackEvent)
-            {
-                stackEvents += ",";
-            }
-
-            stackEvents +=
-                "{\"id\":" + to_string(event.id) +
-                ",\"impactScore\":" + to_string(event.impactScore) +
-                ",\"severity\":\"" + event.severity + "\"" +
-                ",\"timestamp\":\"" + event.timestamp + "\"}";
-
-            firstStackEvent = false;
         }
-
         stackEvents += "]";
 
-        string status =
-            "{\"queueSize\":" + to_string(accidentQueue.size()) +
+        string priorityEvents = "[";
+        priority_queue<AccidentEvent, vector<AccidentEvent>, ComparePriority>
+            priorityCopy = priorityAccidentQueue;
+        first = true;
+        while (!priorityCopy.empty())
+        {
+            if (!first) priorityEvents += ",";
+            first = false;
+            priorityEvents += eventJson(priorityCopy.top());
+            priorityCopy.pop();
+        }
+        priorityEvents += "]";
+
+        string historyEvents = "[";
+        for (size_t index = 0; index < accidentHistory.size(); ++index)
+        {
+            if (index != 0) historyEvents += ",";
+            historyEvents += eventJson(accidentHistory[index]);
+        }
+        historyEvents += "]";
+
+        const string latestSevereEvent =
+            severeAccidentStack.empty()
+                ? "null"
+                : eventJson(severeAccidentStack.top());
+        const string highestPriorityEvent =
+            priorityAccidentQueue.empty()
+                ? "null"
+                : eventJson(priorityAccidentQueue.top());
+        const string processingStatus =
+            accidentQueue.empty() ? "idle" : "pending";
+        const string status =
+            "{\"success\":true,"
+            "\"queueSize\":" + to_string(accidentQueue.size()) +
+            ",\"pendingEvents\":" + to_string(accidentQueue.size()) +
             ",\"severeStackSize\":" + to_string(severeAccidentStack.size()) +
+            ",\"severeAccidentCount\":" + to_string(severeAccidentStack.size()) +
             ",\"processedEvents\":" + to_string(processedAccidentEvents) +
+            ",\"totalProcessedEvents\":" + to_string(processedAccidentEvents) +
             ",\"totalEnqueuedEvents\":" + to_string(totalEnqueuedEvents) +
+            ",\"totalReceivedEvents\":" + to_string(totalEnqueuedEvents) +
+            ",\"processingStatus\":" + jsonEscape(processingStatus) +
             ",\"latestSevereEvent\":" + latestSevereEvent +
             ",\"queueEvents\":" + queueEvents +
             ",\"stackEvents\":" + stackEvents +
+            ",\"priorityEvents\":" + priorityEvents +
+            ",\"historyEvents\":" + historyEvents +
             ",\"highestPriorityEvent\":" + highestPriorityEvent + "}";
 
         return getResponse(200, status);
@@ -510,47 +562,14 @@ string processRequest(const string &request)
 
         for (size_t i = 0; i < totalRecords; i++)
         {
-            const bool fromDatabase = database.isEnabled();
-            const std::uint64_t id = fromDatabase ? persistedAccidents[i].id
-                                                  : accidentHistory[i].id;
-            const int impactScore = fromDatabase
-                                        ? persistedAccidents[i].impactScore
-                                        : accidentHistory[i].impactScore;
-            const string &severity = fromDatabase
-                                         ? persistedAccidents[i].severity
-                                         : accidentHistory[i].severity;
-            const string &timestamp = fromDatabase
-                                          ? persistedAccidents[i].timestamp
-                                          : accidentHistory[i].timestamp;
-            const bool hasLocation = fromDatabase
-                                         ? persistedAccidents[i].hasLocation
-                                         : accidentHistory[i].hasLocation;
-            const double latitude = fromDatabase
-                                        ? persistedAccidents[i].latitude
-                                        : accidentHistory[i].latitude;
-            const double longitude = fromDatabase
-                                         ? persistedAccidents[i].longitude
-                                         : accidentHistory[i].longitude;
-            const bool processed = fromDatabase
-                                       ? persistedAccidents[i].processed
-                                       : accidentHistory[i].processed;
-
             if (i > 0)
             {
                 history += ",";
             }
-
-            history +=
-                "{\"id\":" + to_string(id) +
-                ",\"impactScore\":" + to_string(impactScore) +
-                ",\"severity\":\"" + severity + "\"" +
-                ",\"timestamp\":\"" + timestamp + "\"" +
-                ",\"hasLocation\":" + string(hasLocation ? "true" : "false") +
-                ",\"latitude\":" + (hasLocation ? to_string(latitude) : "null") +
-                ",\"longitude\":" + (hasLocation ? to_string(longitude) : "null") +
-                ",\"status\":\"" +
-                string(processed ? "Processed" : "Pending") +
-                "\"}";
+            const AccidentEvent event = database.isEnabled()
+                                            ? fromPersistedAccident(persistedAccidents[i])
+                                            : accidentHistory[i];
+            history += eventJson(event);
         }
 
         history += "]}";
@@ -559,17 +578,20 @@ string processRequest(const string &request)
     }
 
     // Process the oldest pending accident event.
-    if (headers.find("POST /api/dsa/process ") == 0)
+    const bool priorityProcessing =
+        headers.find("POST /api/dsa/process-priority ") == 0;
+    if (headers.find("POST /api/dsa/process ") == 0 || priorityProcessing)
     {
 
-        if (accidentQueue.empty())
+        if (accidentQueue.empty() || (priorityProcessing && priorityAccidentQueue.empty()))
         {
             return getResponse(200,
                                R"({"success":true,"message":"Queue is empty"})");
         }
 
-        // FIFO: retrieve and remove the oldest event.
-        AccidentEvent currentEvent = accidentQueue.front();
+        AccidentEvent currentEvent =
+            priorityProcessing ? priorityAccidentQueue.top()
+                               : accidentQueue.front();
         std::string databaseError;
         if (database.isEnabled() &&
             !database.updateAccidentProcessed(currentEvent.id, databaseError))
@@ -579,7 +601,22 @@ string processRequest(const string &request)
             return getResponse(
                 503, R"({"success":false,"error":"Accident could not be processed"})");
         }
-        accidentQueue.pop();
+        if (!priorityProcessing)
+        {
+            accidentQueue.pop();
+        }
+        else
+        {
+            queue<AccidentEvent> remaining;
+            while (!accidentQueue.empty())
+            {
+                const AccidentEvent candidate = accidentQueue.front();
+                accidentQueue.pop();
+                if (candidate.id != currentEvent.id)
+                    remaining.push(candidate);
+            }
+            accidentQueue.swap(remaining);
+        }
 
         // Update the corresponding history record.
         for (size_t i = 0; i < accidentHistory.size(); i++)
@@ -594,15 +631,13 @@ string processRequest(const string &request)
         processedAccidentEvents++;
         updatePriorityQueue();
 
-        // Store severe events in the LIFO stack.
-        if (currentEvent.severity == "Severe")
-        {
-            pushSevereEvent(currentEvent);
-        }
-
         string result =
             "{\"success\":true,"
-            "\"message\":\"Accident event processed successfully\","
+            "\"message\":" +
+            jsonEscape(priorityProcessing
+                           ? "Highest-priority accident event processed successfully"
+                           : "Oldest accident event processed successfully") +
+            ","
             "\"processedEventId\":" +
             to_string(currentEvent.id) +
             "}";
@@ -614,7 +649,7 @@ string processRequest(const string &request)
 
     if (headers.find("POST /api/vehicles/register ") == 0)
     {
-        string vehicleId = readString(body, "vehicleId");
+        string vehicleId = readJsonString(requestJson, "vehicleId");
 
         if (vehicleId.empty() || vehicleId.size() > 40)
         {
@@ -674,16 +709,22 @@ string processRequest(const string &request)
 
     if (headers.find("POST /api/vehicles/location ") == 0)
     {
-        string vehicleId = readString(body, "vehicleId");
-
-        double latitude = readSpeed(body, "latitude");
-        double longitude = readSpeed(body, "longitude");
-        double speed = readSpeed(body, "speed");
+        string vehicleId = readJsonString(requestJson, "vehicleId");
+        double latitude = 0;
+        double longitude = 0;
+        double speed = 0;
 
         if (vehicleId.empty())
         {
             return getResponse(400,
                                R"({"success":false,"error":"Vehicle ID is required"})");
+        }
+        if (!readJsonNumber(requestJson, "latitude", latitude) ||
+            !readJsonNumber(requestJson, "longitude", longitude) ||
+            !readJsonNumber(requestJson, "speed", speed))
+        {
+            return getResponse(
+                400, R"({"success":false,"error":"Numeric latitude, longitude, and speed are required"})");
         }
 
         if (!std::isfinite(latitude) || !std::isfinite(longitude) ||
@@ -808,20 +849,14 @@ if (headers.find("GET /api/vehicles ") == 0)
 
     if (headers.find("POST /api/vehicles/sensor-data ") == 0)
     {
-        const string vehicleId = readString(body, "vehicleId");
+        const string vehicleId = readJsonString(requestJson, "vehicleId");
         const char *sensorFields[] = {
             "accelerationX", "accelerationY", "accelerationZ",
             "gyroscopeX", "gyroscopeY", "gyroscopeZ"};
         double sensorValues[6];
         for (size_t i = 0; i < 6; ++i)
         {
-            const string field = string("\"") + sensorFields[i] + "\"";
-            if (body.find(field) == string::npos)
-            {
-                return getResponse(
-                    400, R"({"success":false,"error":"All six sensor values are required"})");
-            }
-            if (!readFiniteNumber(body, sensorFields[i], sensorValues[i]) ||
+            if (!readJsonNumber(requestJson, sensorFields[i], sensorValues[i]) ||
                 std::abs(sensorValues[i]) > 100000)
             {
                 return getResponse(
@@ -854,31 +889,268 @@ if (headers.find("GET /api/vehicles ") == 0)
             200, R"({"success":true,"message":"Sensor reading saved"})");
     }
 
+    if (headers.find("POST /api/ai/event ") == 0)
+    {
+        const JsonValue *eventIdValue = jsonMember(requestJson, "eventId");
+        const JsonValue *timestampValue = jsonMember(requestJson, "timestamp");
+        const JsonValue *vehicleIdsValue = jsonMember(requestJson, "vehicleIds");
+        const JsonValue *confidenceValue = jsonMember(requestJson, "confidence");
+        const JsonValue *eventTypeValue = jsonMember(requestJson, "eventType");
+        const JsonValue *evidenceValue = jsonMember(requestJson, "evidence");
+        if (eventIdValue == nullptr || timestampValue == nullptr ||
+            vehicleIdsValue == nullptr || confidenceValue == nullptr ||
+            eventTypeValue == nullptr || evidenceValue == nullptr ||
+            eventIdValue->type != JsonValue::Type::String ||
+            timestampValue->type != JsonValue::Type::String ||
+            eventTypeValue->type != JsonValue::Type::String ||
+            vehicleIdsValue->type != JsonValue::Type::Array ||
+            evidenceValue->type != JsonValue::Type::Array)
+        {
+            return getResponse(
+                400, R"({"success":false,"error":"eventId, timestamp, vehicleIds, confidence, eventType, and evidence are required with valid types"})");
+        }
+
+        const string &eventId = eventIdValue->string;
+        const string &timestamp = timestampValue->string;
+        const string &eventType = eventTypeValue->string;
+        if (eventId.empty() || eventId.size() > 160 ||
+            timestamp.empty() || timestamp.size() > 80 ||
+            vehicleIdsValue->array.empty() ||
+            vehicleIdsValue->array.size() > 32 ||
+            evidenceValue->array.empty() ||
+            evidenceValue->array.size() > 64)
+        {
+            return getResponse(
+                400, R"({"success":false,"error":"AI event fields exceed allowed limits or are empty"})");
+        }
+        for (char character : eventId)
+        {
+            if (!isalnum(static_cast<unsigned char>(character)) &&
+                character != '-' && character != '_' &&
+                character != '.' && character != ':')
+            {
+                return getResponse(
+                    400, R"({"success":false,"error":"eventId contains unsupported characters"})");
+            }
+        }
+        for (unsigned char character : timestamp)
+        {
+            if (character < 0x20)
+            {
+                return getResponse(
+                    400, R"({"success":false,"error":"timestamp contains unsupported characters"})");
+            }
+        }
+
+        const bool isNumericConfidence =
+            confidenceValue->type == JsonValue::Type::Number;
+        if (isNumericConfidence &&
+            (confidenceValue->number < 0 || confidenceValue->number > 1))
+        {
+            return getResponse(
+                400, R"({"success":false,"error":"Numeric confidence must be between 0 and 1"})");
+        }
+        if (!isNumericConfidence &&
+            (confidenceValue->type != JsonValue::Type::String ||
+             confidenceValue->string.empty() ||
+             confidenceValue->string.size() > 40))
+        {
+            return getResponse(
+                400, R"({"success":false,"error":"confidence must be a label or a number between 0 and 1"})");
+        }
+        if (eventType != "suspected_accident" &&
+            eventType != "potential_accident")
+        {
+            return getResponse(
+                400, R"({"success":false,"error":"Video-only events must remain potential or suspected; independent validation is required for confirmation"})");
+        }
+        if (eventType == "potential_accident" &&
+            (!isNumericConfidence ||
+             confidenceValue->number < aiForwardConfidenceThreshold))
+        {
+            return getResponse(
+                400, R"({"success":false,"error":"Potential events require numeric confidence at or above the configured forwarding threshold"})");
+        }
+
+        for (const JsonValue &vehicleId : vehicleIdsValue->array)
+        {
+            if (vehicleId.type == JsonValue::Type::String)
+            {
+                if (vehicleId.string.empty() || vehicleId.string.size() > 64)
+                {
+                    return getResponse(
+                        400, R"({"success":false,"error":"vehicleIds contain an invalid string ID"})");
+                }
+            }
+            else if (vehicleId.type == JsonValue::Type::Number)
+            {
+                if (vehicleId.number < 0 || vehicleId.number > 1000000000 ||
+                    std::floor(vehicleId.number) != vehicleId.number)
+                {
+                    return getResponse(
+                        400, R"({"success":false,"error":"vehicleIds contain an invalid numeric ID"})");
+                }
+            }
+            else
+            {
+                return getResponse(
+                    400, R"({"success":false,"error":"vehicleIds must contain only string or nonnegative integer IDs"})");
+            }
+        }
+
+        const char *allowedEvidenceTypes[] = {
+            "vehicle_proximity", "bounding_box_overlap",
+            "sudden_deceleration", "abrupt_direction_change",
+            "stopped_after_possible_collision"};
+        for (const JsonValue &evidence : evidenceValue->array)
+        {
+            const JsonValue *typeValue = jsonMember(evidence, "type");
+            if (typeValue == nullptr ||
+                typeValue->type != JsonValue::Type::String ||
+                std::find(std::begin(allowedEvidenceTypes),
+                          std::end(allowedEvidenceTypes),
+                          typeValue->string) == std::end(allowedEvidenceTypes))
+            {
+                return getResponse(
+                    400, R"({"success":false,"error":"evidence must contain recognized evidence types"})");
+            }
+        }
+
+        const JsonValue *validatedValue = jsonMember(requestJson, "validated");
+        if (validatedValue != nullptr &&
+            (validatedValue->type != JsonValue::Type::Boolean ||
+             validatedValue->boolean))
+        {
+            return getResponse(
+                400, R"({"success":false,"error":"Video-only AI events cannot be marked as independently validated"})");
+        }
+
+        const JsonValue *latitudeValue = jsonMember(requestJson, "latitude");
+        const JsonValue *longitudeValue = jsonMember(requestJson, "longitude");
+        const bool hasLatitude =
+            latitudeValue != nullptr && latitudeValue->type != JsonValue::Type::Null;
+        const bool hasLongitude =
+            longitudeValue != nullptr && longitudeValue->type != JsonValue::Type::Null;
+        if (hasLatitude != hasLongitude)
+        {
+            return getResponse(
+                400, R"({"success":false,"error":"Both GPS coordinates are required when location is provided"})");
+        }
+        const bool hasLocation = hasLatitude && hasLongitude;
+        double latitude = 0;
+        double longitude = 0;
+        if (hasLocation)
+        {
+            if (latitudeValue->type != JsonValue::Type::Number ||
+                longitudeValue->type != JsonValue::Type::Number ||
+                latitudeValue->number < -90 || latitudeValue->number > 90 ||
+                longitudeValue->number < -180 || longitudeValue->number > 180)
+            {
+                return getResponse(
+                    400, R"({"success":false,"error":"GPS coordinates are outside valid ranges"})");
+            }
+            latitude = latitudeValue->number;
+            longitude = longitudeValue->number;
+        }
+
+        const auto existingEvent = seenAIEventIds.find(eventId);
+        if (existingEvent != seenAIEventIds.end())
+        {
+            return getResponse(
+                200, "{\"success\":true,\"duplicate\":true,\"eventId\":" +
+                         jsonEscape(eventId) + ",\"id\":" +
+                         to_string(existingEvent->second) + "}");
+        }
+
+        AccidentEvent newEvent{};
+        newEvent.impactScore = 0;
+        newEvent.severity =
+            eventType == "suspected_accident"
+                ? "Suspected Accident"
+                : "Potential Accident";
+        newEvent.timestamp = timestamp;
+        newEvent.latitude = latitude;
+        newEvent.longitude = longitude;
+        newEvent.hasLocation = hasLocation;
+        newEvent.processed = false;
+        newEvent.sourceEventId = eventId;
+        newEvent.eventType = eventType;
+        newEvent.confidenceJson = serializeJson(*confidenceValue);
+        newEvent.vehicleIdsJson = serializeJson(*vehicleIdsValue);
+        newEvent.evidenceJson = serializeJson(*evidenceValue);
+
+        std::string databaseError;
+        if (database.isEnabled())
+        {
+            bool inserted = false;
+            if (!database.insertAiAccident(
+                    eventId, timestamp, eventType, newEvent.severity,
+                    newEvent.confidenceJson, newEvent.vehicleIdsJson,
+                    newEvent.evidenceJson, hasLocation, latitude, longitude,
+                    newEvent.id, inserted, databaseError))
+            {
+                cerr << "PostgreSQL AI event insert failed: "
+                     << databaseError << '\n';
+                return getResponse(
+                    503, R"({"success":false,"error":"AI event could not be saved"})");
+            }
+            nextAccidentId = std::max(nextAccidentId, newEvent.id + 1);
+            if (!inserted)
+            {
+                seenAIEventIds[eventId] = newEvent.id;
+                return getResponse(
+                    200, "{\"success\":true,\"duplicate\":true,\"eventId\":" +
+                             jsonEscape(eventId) + ",\"id\":" +
+                             to_string(newEvent.id) + "}");
+            }
+        }
+        else
+        {
+            newEvent.id = nextAccidentId++;
+        }
+
+        seenAIEventIds[eventId] = newEvent.id;
+        accidentQueue.push(newEvent);
+        if (accidentHistory.size() >= MAX_HISTORY)
+        {
+            accidentHistory.erase(accidentHistory.begin());
+        }
+        accidentHistory.push_back(newEvent);
+        updatePriorityQueue();
+        ++totalEnqueuedEvents;
+
+        return getResponse(
+            201, "{\"success\":true,\"duplicate\":false,\"event\":" +
+                     eventJson(newEvent) + "}");
+    }
+
     if (headers.find("POST /api/accident ") != 0)
     {
-        return getResponse(400, R"({"error":"Unknown endpoint"})");
+        return getResponse(404, R"({"success":false,"error":"Unknown endpoint"})");
     }
 
-    // Read speeds from the JSON request body.
-    double speedA = readSpeed(body, "speedA");
-    double speedB = readSpeed(body, "speedB");
-    double impactG = readSpeed(body, "impactG");
-
-    // Read vehicle masses from the JSON request.
-    double massA = readSpeed(body, "massA");
-    double massB = readSpeed(body, "massB");
-
-    // Read collision type.
-    string collisionType = "unknown";
-
-    if (body.find("\"collisionType\":\"head-on\"") != string::npos)
+    double speedA = 0;
+    double speedB = 0;
+    double massA = 0;
+    double massB = 0;
+    double impactG = 0;
+    if (!readJsonNumber(requestJson, "speedA", speedA) ||
+        !readJsonNumber(requestJson, "speedB", speedB) ||
+        !readJsonNumber(requestJson, "massA", massA) ||
+        !readJsonNumber(requestJson, "massB", massB))
     {
-        collisionType = "head-on";
+        return getResponse(
+            400, R"({"success":false,"error":"Numeric speedA, speedB, massA, and massB fields are required"})");
     }
-    else if (body.find("\"collisionType\":\"rear-end\"") != string::npos)
+    const JsonValue *impactValue = jsonMember(requestJson, "impactG");
+    if (impactValue != nullptr &&
+        !readJsonNumber(requestJson, "impactG", impactG))
     {
-        collisionType = "rear-end";
+        return getResponse(
+            400, R"({"success":false,"error":"impactG must be a finite number"})");
     }
+
+    const string collisionType = readJsonString(requestJson, "collisionType");
 
     // Validate vehicle masses.
     if (!std::isfinite(massA) || !std::isfinite(massB) ||
@@ -897,14 +1169,12 @@ if (headers.find("GET /api/vehicles ") == 0)
     }
 
     // Read optional GPS coordinates.
-    bool latitudeProvided =
-        body.find("\"latitude\"") != string::npos;
-
-    bool longitudeProvided =
-        body.find("\"longitude\"") != string::npos;
-
-    double latitude = readSpeed(body, "latitude");
-    double longitude = readSpeed(body, "longitude");
+    const bool latitudeProvided =
+        jsonMember(requestJson, "latitude") != nullptr;
+    const bool longitudeProvided =
+        jsonMember(requestJson, "longitude") != nullptr;
+    double latitude = 0;
+    double longitude = 0;
 
     bool hasLocation = latitudeProvided && longitudeProvided;
 
@@ -916,36 +1186,13 @@ if (headers.find("GET /api/vehicles ") == 0)
     }
 
     if (hasLocation &&
-        (!std::isfinite(latitude) || !std::isfinite(longitude) ||
+        (!readJsonNumber(requestJson, "latitude", latitude) ||
+         !readJsonNumber(requestJson, "longitude", longitude) ||
          latitude < -90 || latitude > 90 ||
          longitude < -180 || longitude > 180))
     {
         return getResponse(400,
                            R"({"error":"Invalid GPS coordinates"})");
-    }
-
-    // Use 0 when the frontend does not send impactG yet.
-    if (impactG < 0)
-    {
-        impactG = 0;
-    }
-
-    // Read more bytes if the request body is incomplete.
-    size_t contentPos = headers.find("Content-Length:");
-    if (contentPos != string::npos)
-    {
-        size_t lengthStart = contentPos + 15;
-        while (lengthStart < headers.size() && headers[lengthStart] == ' ')
-            ++lengthStart;
-        size_t lengthEnd = headers.find("\r\n", lengthStart);
-        int contentLength = stoi(headers.substr(lengthStart,
-                                                lengthEnd - lengthStart));
-
-        while (body.size() < static_cast<size_t>(contentLength))
-        {
-            // The caller normally collects the full request before processing.
-            break;
-        }
     }
 
     // Validate speed and impact sensor readings.
@@ -1022,9 +1269,29 @@ if (headers.find("GET /api/vehicles ") == 0)
     newEvent.hasLocation = hasLocation;
 
     newEvent.processed = false;
+    newEvent.eventType = collisionType;
+    newEvent.confidenceJson = "null";
+    newEvent.evidenceJson = "[]";
+    JsonValue vehicleIds;
+    vehicleIds.type = JsonValue::Type::Array;
+    for (const char *vehicleField : {"vehicleAId", "vehicleBId"})
+    {
+        const JsonValue *vehicleId = jsonMember(requestJson, vehicleField);
+        if (vehicleId != nullptr &&
+            (vehicleId->type == JsonValue::Type::String ||
+             vehicleId->type == JsonValue::Type::Number))
+        {
+            vehicleIds.array.push_back(*vehicleId);
+        }
+    }
+    newEvent.vehicleIdsJson = serializeJson(vehicleIds);
 
     // Add to pending FIFO Queue.
     accidentQueue.push(newEvent);
+    if (newEvent.severity == "Severe")
+    {
+        pushSevereEvent(newEvent);
+    }
 
     // Save independently in accident history.
     if (accidentHistory.size() >= MAX_HISTORY)
@@ -1062,8 +1329,175 @@ if (headers.find("GET /api/vehicles ") == 0)
     return getResponse(200, result);
 }
 
+std::atomic<unsigned> activeClients{0};
+const unsigned MAX_CONCURRENT_CLIENTS = 64;
+
+bool readHttpContentLength(const string &headers, size_t &contentLength)
+{
+    contentLength = 0;
+    std::istringstream lines(headers);
+    string line;
+    bool firstLine = true;
+    bool foundLength = false;
+    while (std::getline(lines, line))
+    {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        if (firstLine)
+        {
+            firstLine = false;
+            continue;
+        }
+        const size_t colon = line.find(':');
+        if (colon == string::npos)
+            return false;
+        string name = line.substr(0, colon);
+        std::transform(name.begin(), name.end(), name.begin(),
+                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+        if (name == "transfer-encoding")
+            return false;
+        if (name != "content-length")
+            continue;
+        if (foundLength)
+            return false;
+        foundLength = true;
+        size_t start = colon + 1;
+        while (start < line.size() &&
+               std::isspace(static_cast<unsigned char>(line[start])))
+            ++start;
+        size_t end = line.size();
+        while (end > start &&
+               std::isspace(static_cast<unsigned char>(line[end - 1])))
+            --end;
+        if (start == end)
+            return false;
+        for (size_t index = start; index < end; ++index)
+        {
+            if (line[index] < '0' || line[index] > '9')
+                return false;
+            const size_t digit = static_cast<size_t>(line[index] - '0');
+            if (contentLength > (std::numeric_limits<size_t>::max() - digit) / 10)
+                return false;
+            contentLength = contentLength * 10 + digit;
+        }
+    }
+    return true;
+}
+
+void sendSocketResponse(SOCKET client, const string &response)
+{
+    size_t sent = 0;
+    while (sent < response.size())
+    {
+        const int count = send(
+            client, response.data() + sent,
+            static_cast<int>(response.size() - sent), 0);
+        if (count <= 0)
+            return;
+        sent += static_cast<size_t>(count);
+    }
+}
+
+void handleClient(SOCKET client)
+{
+    DWORD timeoutMilliseconds = 2000;
+    setsockopt(client, SOL_SOCKET, SO_RCVTIMEO,
+               reinterpret_cast<const char *>(&timeoutMilliseconds),
+               sizeof(timeoutMilliseconds));
+    setsockopt(client, SOL_SOCKET, SO_SNDTIMEO,
+               reinterpret_cast<const char *>(&timeoutMilliseconds),
+               sizeof(timeoutMilliseconds));
+
+    string request;
+    char buffer[4096];
+    bool rejected = false;
+    while (true)
+    {
+        const int received = recv(client, buffer, sizeof(buffer), 0);
+        if (received <= 0)
+            break;
+        request.append(buffer, static_cast<size_t>(received));
+        const size_t headerEnd = request.find("\r\n\r\n");
+        if (headerEnd == string::npos)
+        {
+            if (request.size() > 64 * 1024)
+            {
+                sendSocketResponse(
+                    client, getResponse(
+                                413, R"({"success":false,"error":"HTTP headers are too large"})"));
+                rejected = true;
+                break;
+            }
+            continue;
+        }
+
+        const string headers = request.substr(0, headerEnd);
+        size_t expectedBodySize = 0;
+        if (!readHttpContentLength(headers, expectedBodySize))
+        {
+            sendSocketResponse(
+                client, getResponse(
+                            400, R"({"success":false,"error":"Invalid or unsupported HTTP headers"})"));
+            rejected = true;
+            break;
+        }
+        if (expectedBodySize > 1024 * 1024)
+        {
+            sendSocketResponse(
+                client, getResponse(
+                            413, R"({"success":false,"error":"Request body exceeds 1 MB"})"));
+            rejected = true;
+            break;
+        }
+        if (request.size() >= headerEnd + 4 + expectedBodySize)
+            break;
+        if (request.size() > 64 * 1024 + 1024 * 1024)
+        {
+            sendSocketResponse(
+                client, getResponse(
+                            413, R"({"success":false,"error":"HTTP request is too large"})"));
+            rejected = true;
+            break;
+        }
+    }
+
+    if (!rejected)
+    {
+        try
+        {
+            const string response = processRequest(request);
+            sendSocketResponse(client, response);
+        }
+        catch (const std::exception &error)
+        {
+            cerr << "Request processing failed: " << error.what() << '\n';
+            sendSocketResponse(
+                client, getResponse(
+                            500, R"({"success":false,"error":"Internal request processing error"})"));
+        }
+    }
+    closesocket(client);
+}
+
 int main()
 {
+    const char *confidenceThreshold =
+        std::getenv("AI_FORWARD_CONFIDENCE_THRESHOLD");
+    if (confidenceThreshold != nullptr && *confidenceThreshold != '\0')
+    {
+        char *end = nullptr;
+        const double configuredThreshold =
+            std::strtod(confidenceThreshold, &end);
+        if (end == confidenceThreshold || *end != '\0' ||
+            !std::isfinite(configuredThreshold) ||
+            configuredThreshold < 0 || configuredThreshold > 1)
+        {
+            cerr << "AI_FORWARD_CONFIDENCE_THRESHOLD must be between 0 and 1.\n";
+            return 1;
+        }
+        aiForwardConfidenceThreshold = configuredThreshold;
+    }
+
     std::string databaseError;
     if (!database.connectFromEnvironment(databaseError))
     {
@@ -1129,13 +1563,20 @@ int main()
     if (bind(serverSocket, reinterpret_cast<sockaddr *>(&serverAddress),
              sizeof(serverAddress)) == SOCKET_ERROR)
     {
-        cerr << "Could not bind port 8080. Is another server using it?\n";
+        cerr << "Could not bind port " << port
+             << ". Is another server using it?\n";
         closesocket(serverSocket);
         WSACleanup();
         return 1;
     }
 
-    listen(serverSocket, SOMAXCONN);
+    if (listen(serverSocket, SOMAXCONN) == SOCKET_ERROR)
+    {
+        cerr << "Could not listen on the configured port.\n";
+        closesocket(serverSocket);
+        WSACleanup();
+        return 1;
+    }
 
     cout << "Smart Accident Detection Backend\n";
     cout << "Listening at http://localhost:" << port << '\n';
@@ -1146,47 +1587,35 @@ int main()
         SOCKET client = accept(serverSocket, nullptr, nullptr);
         if (client == INVALID_SOCKET)
             continue;
-
-        string request;
-        char buffer[4096];
-        int received;
-
-        do
+        unsigned currentClients = activeClients.load();
+        while (currentClients < MAX_CONCURRENT_CLIENTS &&
+               !activeClients.compare_exchange_weak(
+                   currentClients, currentClients + 1))
         {
-            received = recv(client, buffer, sizeof(buffer), 0);
-            if (received > 0)
-            {
-                request.append(buffer, received);
-
-                size_t headerEnd = request.find("\r\n\r\n");
-                if (headerEnd != string::npos)
-                {
-                    string headers = request.substr(0, headerEnd);
-                    size_t p = headers.find("Content-Length:");
-                    size_t expected = 0;
-
-                    if (p != string::npos)
-                    {
-                        p += 15;
-                        while (p < headers.size() && headers[p] == ' ')
-                            ++p;
-                        expected = static_cast<size_t>(
-                            stoi(headers.substr(p)));
-                    }
-
-                    if (request.size() >= headerEnd + 4 + expected)
-                        break;
-                }
-                else if (request.size() > 65536)
-                {
-                    break;
-                }
-            }
-        } while (received > 0);
-
-        string response = processRequest(request);
-        send(client, response.c_str(), static_cast<int>(response.size()), 0);
-        closesocket(client);
+        }
+        if (currentClients >= MAX_CONCURRENT_CLIENTS)
+        {
+            sendSocketResponse(
+                client, getResponse(
+                            503, R"({"success":false,"error":"Backend is handling the maximum number of concurrent requests"})"));
+            closesocket(client);
+            continue;
+        }
+        try
+        {
+            std::thread([client]()
+                        {
+                            handleClient(client);
+                            activeClients.fetch_sub(1);
+                        })
+                .detach();
+        }
+        catch (const std::system_error &error)
+        {
+            activeClients.fetch_sub(1);
+            cerr << "Could not start request worker: " << error.what() << '\n';
+            closesocket(client);
+        }
     }
 
     closesocket(serverSocket);
