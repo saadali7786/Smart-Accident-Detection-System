@@ -20,7 +20,50 @@ def detection(x, y=300):
     return (x, y, BOX_SIZE[0], BOX_SIZE[1])
 
 
+
 class AccidentAnalyzerTests(unittest.TestCase):
+
+    def test_replayed_motion_evidence_is_not_counted_twice(self):
+        analyzer = AccidentAnalyzer()
+
+        def motion_evidence(frame):
+            return {
+                "type": "sudden_deceleration",
+                "track_id": 1,
+                "frame": frame,
+                "timestamp_seconds": frame / 25,
+                "metrics": {"speed_reduction": 0.8},
+            }
+
+        analyzer._record_event(
+            (1,), [motion_evidence(10)], 10, 10 / 25
+        )
+
+        # Same frame replayed.
+        analyzer._record_event(
+            (1,), [motion_evidence(10)], 11, 11 / 25
+        )
+
+        # Older frame replayed.
+        analyzer._record_event(
+            (1,), [motion_evidence(9)], 12, 12 / 25
+        )
+
+        # New frame should count.
+        analyzer._record_event(
+            (1,), [motion_evidence(13)], 13, 13 / 25
+        )
+
+        event = analyzer.results(25)["events"][0]
+        evidence = next(
+            item for item in event["evidence"]
+            if item["type"] == "sudden_deceleration"
+        )
+
+        self.assertEqual(evidence["observations"], 2)
+        self.assertEqual(evidence["last_frame"], 13)
+
+
     def test_constant_speed_traffic_is_normal(self):
         analyzer = AccidentAnalyzer()
         for frame_index in range(30):

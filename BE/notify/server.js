@@ -14,6 +14,7 @@ app.use(express.json({ limit: "20kb" }));
 app.use(rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 10,
+  skip: (req) => req.path === "/api/health",
 }));
 
 const required = [
@@ -29,16 +30,23 @@ const required = [
 const missing = required.filter((key) => !process.env[key]);
 
 if (missing.length) {
-  console.error("Missing .env settings:", missing.join(", "));
-  process.exit(1);
+  console.warn("Notification settings missing:", missing.join(", "));
 }
 
-const smsClient = twilio(
-  process.env.TWILIO_ACCOUNT_SID,
-  process.env.TWILIO_AUTH_TOKEN
+const validTwilioSid = /^AC[a-fA-F0-9]{32}$/.test(
+  process.env.TWILIO_ACCOUNT_SID || ""
 );
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+const smsClient = validTwilioSid && process.env.TWILIO_AUTH_TOKEN
+  ? twilio(
+      process.env.TWILIO_ACCOUNT_SID,
+      process.env.TWILIO_AUTH_TOKEN
+    )
+  : null;
+
+const resend = process.env.RESEND_API_KEY
+  ? new Resend(process.env.RESEND_API_KEY)
+  : null;
 
 app.get("/api/health", (req, res) => {
   res.json({
@@ -85,19 +93,24 @@ app.post("/api/report", async (req, res) => {
     "This report has not been independently verified.",
   ].join("\n");
 
-  const results = await Promise.allSettled([
-    smsClient.messages.create({
-      from: process.env.TWILIO_PHONE_NUMBER,
-      to: process.env.EMERGENCY_CONTACT_PHONE,
-      body: message,
-    }),
-    resend.emails.send({
-      from: process.env.EMAIL_FROM,
-      to: [process.env.EMERGENCY_CONTACT_EMAIL],
-      subject: `Accident report: ${severity}`,
-      text: message,
-    }),
-  ]);
+const results = await Promise.allSettled([
+  smsClient
+    ? smsClient.messages.create({
+        from: process.env.TWILIO_PHONE_NUMBER,
+        to: process.env.EMERGENCY_CONTACT_PHONE,
+        body: message,
+      })
+    : Promise.reject(new Error("Twilio is not configured")),
+
+  resend
+    ? resend.emails.send({
+        from: process.env.EMAIL_FROM,
+        to: [process.env.EMERGENCY_CONTACT_EMAIL],
+        subject: `Accident report: ${severity}`,
+        text: message,
+      })
+    : Promise.reject(new Error("Resend is not configured")),
+]);
 
   const smsSent = results[0].status === "fulfilled";
   const emailSent = results[1].status === "fulfilled";

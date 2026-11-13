@@ -476,9 +476,11 @@ class AccidentAnalyzer:
             if timestamp - signal["timestamp_seconds"] <= self.config.evidence_window_seconds
         ]
 
+
     def _record_event(self, track_ids, evidence, frame_index, timestamp):
         track_ids = set(track_ids)
         existing = None
+
         for event in reversed(self._events):
             if timestamp - event["last_evidence_seconds"] > self.config.event_merge_seconds:
                 continue
@@ -489,6 +491,7 @@ class AccidentAnalyzer:
         if existing is None:
             event_id = "AI-{:05d}".format(self._next_event_id)
             self._next_event_id += 1
+
             existing = {
                 "event_id": event_id,
                 "id": event_id,
@@ -513,36 +516,61 @@ class AccidentAnalyzer:
         existing["trackIds"] = all_track_ids
         existing["involved_vehicle_ids"] = all_track_ids
         existing["last_evidence_seconds"] = timestamp
-        evidence_by_type = {entry["type"]: entry for entry in existing["evidence"]}
+
+        evidence_by_type = {
+            entry["type"]: entry for entry in existing["evidence"]
+        }
+
         for item in evidence:
             evidence_type = item["type"]
+
             if evidence_type in evidence_by_type:
                 stored = evidence_by_type[evidence_type]
-                stored["last_frame"] = item["frame"]
-                stored["last_timestamp_seconds"] = round(item["timestamp_seconds"], 3)
-                stored["observations"] += 1
-                stored["metrics"] = item.get("metrics", stored["metrics"])
+
+                # Count each evidence type at most once per frame.
+                if item["frame"] > stored["last_frame"]:
+                    stored["last_frame"] = item["frame"]
+                    stored["last_timestamp_seconds"] = round(
+                        item["timestamp_seconds"], 3
+                    )
+                    stored["observations"] += 1
+                    stored["metrics"] = item.get(
+                        "metrics", stored["metrics"]
+                    )
+
             else:
                 stored = {
                     "type": evidence_type,
                     "label": EVIDENCE_LABELS[evidence_type],
                     "first_frame": item["frame"],
                     "last_frame": item["frame"],
-                    "first_timestamp_seconds": round(item["timestamp_seconds"], 3),
-                    "last_timestamp_seconds": round(item["timestamp_seconds"], 3),
+                    "first_timestamp_seconds": round(
+                        item["timestamp_seconds"], 3
+                    ),
+                    "last_timestamp_seconds": round(
+                        item["timestamp_seconds"], 3
+                    ),
                     "observations": 1,
                     "metrics": item.get("metrics", {}),
                 }
+
                 existing["evidence"].append(stored)
                 evidence_by_type[evidence_type] = stored
 
-        evidence_types = {entry["type"] for entry in existing["evidence"]}
+        evidence_types = {
+            entry["type"] for entry in existing["evidence"]
+        }
+
         has_interaction = bool(
-            evidence_types.intersection(("vehicle_proximity", "bounding_box_overlap"))
+            evidence_types.intersection(
+                ("vehicle_proximity", "bounding_box_overlap")
+            )
         )
+
         has_collision_response = bool(
             "stopped_after_possible_collision" in evidence_types
         )
+
         if existing["validated"]:
             classification = CONFIRMED_ACCIDENT
         elif has_interaction and has_collision_response:
@@ -551,14 +579,21 @@ class AccidentAnalyzer:
             classification = POTENTIAL_ACCIDENT
 
         existing["classification"] = classification
-        existing["classification_label"] = CLASSIFICATION_LABELS[classification]
-        existing["confidence"] = "medium" if classification == SUSPECTED_ACCIDENT else "low"
+        existing["classification_label"] = CLASSIFICATION_LABELS[
+            classification
+        ]
+        existing["confidence"] = (
+            "medium"
+            if classification == SUSPECTED_ACCIDENT
+            else "low"
+        )
         existing["label"] = "{} indicators".format(
             CLASSIFICATION_LABELS[classification]
         )
         existing["reason"] = "; ".join(
             entry["label"] for entry in existing["evidence"]
         )
+
         return existing
 
     @staticmethod

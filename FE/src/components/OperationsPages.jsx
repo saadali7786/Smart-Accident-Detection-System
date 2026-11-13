@@ -1,8 +1,14 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+const AI_API_URL =
+  import.meta.env.VITE_AI_API_URL || "http://127.0.0.1:5001";
+
+const LIVE_FRAME_INTERVAL_MS = 500;
+const LIVE_JPEG_QUALITY = 0.65;
 import {
   AlertCircle,
   AlertTriangle,
   BellRing,
+  Camera,
   CameraOff,
   CheckCircle2,
   Download,
@@ -221,6 +227,7 @@ export function OverviewPage({
   );
 }
 
+
 export function LiveMonitoringPage({
   aiStatus,
   backendStatus,
@@ -230,34 +237,530 @@ export function LiveMonitoringPage({
   onNavigate,
   onRefreshVehicles,
 }) {
+  const [liveStatus, setLiveStatus] = useState("idle");
+  const [liveMessage, setLiveMessage] = useState("");
+  const [liveStats, setLiveStats] = useState({
+    processedFrames: 0,
+    vehicleCount: 0,
+    potentialEvents: 0,
+    suspectedEvents: 0,
+    classification: "Monitoring",
+    lastFrameAt: null,
+  });
+
+  const videoRef = useRef(null);
+  const canvasRef = useRef(null);
+  const streamRef = useRef(null);
+  const sessionRef = useRef(null);
+  const timerRef = useRef(null);
+  const busyRef = useRef(false);
+  const startingRef = useRef(false);
+  const mountedRef = useRef(true);
+
   const recentAiEvents = (dsaStatus.historyEvents || [])
     .filter((event) => CLASSIFICATIONS.includes(event.eventType))
     .slice(-5)
     .reverse();
 
+  function stopCameraTracks() {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+
+    if (videoRef.current) {
+      videoRef.current.pause();
+      videoRef.current.srcObject = null;
+    }
+  }
+
+  function stopFrameTimer() {
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+  }
+
+  function readLiveStats(data) {
+    const payload = data?.result || data?.data || data || {};
+    const analysis = payload.accident_analysis || payload.analysis || {};
+    const events =
+      payload.potential_accidents ||
+      payload.events ||
+      analysis.events ||
+      [];
+
+    const potentialEvents =
+      payload.potential_accident_count ??
+      analysis.potential_accident_count ??
+      events.filter((event) =>
+        String(event.classification || "").includes("potential")
+      ).length;
+
+    const suspectedEvents =
+      payload.suspected_accident_count ??
+      analysis.suspected_accident_count ??
+      events.filter((event) =>
+        String(event.classification || "").includes("suspected")
+      ).length;
+
+    return {
+      processedFrames:
+        payload.processed_frames ??
+        payload.processedFrames ??
+        payload.frame_index ??
+        payload.frameIndex,
+      vehicleCount:
+        payload.vehicle_count ??
+        payload.vehicleCount ??
+        payload.unique_tracking_ids ??
+        payload.total_vehicle_detections ??
+        payload.tracked_vehicles,
+      potentialEvents,
+      suspectedEvents,
+      classification:
+        payload.overall_classification_label ||
+        payload.classification_label ||
+        payload.classification ||
+        (suspectedEvents > 0
+          ? "Suspected indicators"
+          : potentialEvents > 0
+            ? "Potential indicators"
+            : "Monitoring"),
+    };
+  }
+
+  async function sendLiveFrame() {
+    const sessionId = sessionRef.current;
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+
+    if (
+      !sessionId ||
+      !video ||
+      !canvas ||
+      busyRef.current ||
+      video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA ||
+      !video.videoWidth ||
+      !video.videoHeight
+    ) {
+      return;
+    }
+
+    busyRef.current = true;
+
+    try {
+      const scale = Math.min(
+        1,
+        640 / video.videoWidth,
+        480 / video.videoHeight
+      );
+
+      canvas.width = Math.max(1, Math.round(video.videoWidth * scale));
+      canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("Could not initialize frame canvas.");
+
+      context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+      const blob = await new Promise((resolve) =>
+        canvas.toBlob(resolve, "image/jpeg", LIVE_JPEG_QUALITY)
+      );
+
+      if (!blob) throw new Error("Could not capture camera frame.");
+      if (sessionRef.current !== sessionId) return;
+
+      const response = await fetch(
+        `${AI_API_URL}/api/ai/live/frame?session_id=${encodeURIComponent(sessionId)}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "image/jpeg" },
+          body: blob,
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok || data.success === false) {
+        throw new Error(
+          data.detail || data.message || `Frame request failed (${response.status})`
+        );
+      }
+
+      if (!mountedRef.current || sessionRef.current !== sessionId) return;
+
+      const stats = readLiveStats(data);
+
+      setLiveStats((previous) => ({
+        processedFrames:
+          stats.processedFrames ?? previous.processedFrames + 1,
+        vehicleCount: stats.vehicleCount ?? previous.vehicleCount,
+        potentialEvents: stats.potentialEvents,
+        suspectedEvents: stats.suspectedEvents,
+        classification: stats.classification,
+        lastFrameAt: new Date(),
+      }));
+
+      if (stats.suspectedEvents > 0) {
+        setLiveMessage(
+          "Suspected accident indicators detected. Independent validation is required."
+        );
+      } else if (stats.potentialEvents > 0) {
+        setLiveMessage(
+          "Potential accident indicators detected. This is not a confirmed accident."
+        );
+      } else {
+        setLiveMessage("Live AI monitoring is running.");
+      }
+    } catch (error) {
+      if (mountedRef.current && sessionRef.current === sessionId) {
+        setLiveMessage(error.message || "Unable to process camera frame.");
+      }
+    } finally {
+      busyRef.current = false;
+    }
+  }
+
+  async function startLiveMonitoring() {
+    if (startingRef.current || sessionRef.current) return;
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setLiveStatus("error");
+      setLiveMessage(
+        "Camera access requires localhost or a secure HTTPS connection."
+      );
+      return;
+    }
+
+    startingRef.current = true;
+    setLiveStatus("starting");
+    setLiveMessage("Requesting browser camera permission...");
+
+    let cameraStream = null;
+    let createdSessionId = null;
+
+    try {
+      cameraStream = await navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: {
+          facingMode: "environment",
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          frameRate: { ideal: 15, max: 20 },
+        },
+      });
+
+      if (!mountedRef.current) {
+        cameraStream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+
+      streamRef.current = cameraStream;
+
+      if (!videoRef.current) {
+        throw new Error("Camera preview is unavailable.");
+      }
+
+      videoRef.current.srcObject = cameraStream;
+      await videoRef.current.play();
+
+      setLiveMessage("Connecting to AI backend...");
+
+      const response = await fetch(`${AI_API_URL}/api/ai/live/start`, {
+        method: "POST",
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.detail || data.message || "Could not start AI session."
+        );
+      }
+
+      createdSessionId =
+        data.session_id ||
+        data.sessionId ||
+        data.live_session?.session_id ||
+        data.liveMonitoring?.sessionId;
+
+      if (!createdSessionId) {
+        throw new Error("AI backend did not return a session ID.");
+      }
+
+      if (!mountedRef.current) {
+        await fetch(
+          `${AI_API_URL}/api/ai/live/stop?session_id=${encodeURIComponent(createdSessionId)}`,
+          { method: "POST" }
+        ).catch(() => {});
+        return;
+      }
+
+      sessionRef.current = createdSessionId;
+
+      setLiveStats({
+        processedFrames: 0,
+        vehicleCount: 0,
+        potentialEvents: 0,
+        suspectedEvents: 0,
+        classification: "Monitoring",
+        lastFrameAt: null,
+      });
+
+      setLiveStatus("running");
+      setLiveMessage("Camera connected. Live AI monitoring started.");
+
+      await sendLiveFrame();
+
+      if (sessionRef.current === createdSessionId) {
+        stopFrameTimer();
+        timerRef.current = setInterval(
+          sendLiveFrame,
+          LIVE_FRAME_INTERVAL_MS
+        );
+      }
+    } catch (error) {
+      if (createdSessionId) {
+        await fetch(
+          `${AI_API_URL}/api/ai/live/stop?session_id=${encodeURIComponent(createdSessionId)}`,
+          { method: "POST" }
+        ).catch(() => {});
+      }
+
+      sessionRef.current = null;
+      stopFrameTimer();
+      stopCameraTracks();
+
+      if (mountedRef.current) {
+        setLiveStatus("error");
+        setLiveMessage(error.message || "Could not start live monitoring.");
+      }
+    } finally {
+      startingRef.current = false;
+    }
+  }
+
+  async function stopLiveMonitoring() {
+    stopFrameTimer();
+
+    const sessionId = sessionRef.current;
+    sessionRef.current = null;
+
+    stopCameraTracks();
+
+    if (!sessionId) {
+      setLiveStatus("idle");
+      setLiveMessage("Camera disconnected.");
+      return;
+    }
+
+    setLiveStatus("stopping");
+    setLiveMessage("Stopping AI monitoring session...");
+
+    try {
+      const response = await fetch(
+        `${AI_API_URL}/api/ai/live/stop?session_id=${encodeURIComponent(sessionId)}`,
+        { method: "POST" }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok || data.success === false) {
+        throw new Error(data.detail || data.message || "Stop request failed.");
+      }
+
+      if (mountedRef.current) {
+        setLiveStatus("idle");
+        setLiveMessage("Live monitoring stopped.");
+      }
+    } catch (error) {
+      if (mountedRef.current) {
+        setLiveStatus("error");
+        setLiveMessage(
+          `${error.message || "Could not stop AI session."} Camera has been disconnected locally.`
+        );
+      }
+    }
+  }
+
+  useEffect(() => {
+    mountedRef.current = true;
+
+    return () => {
+      mountedRef.current = false;
+      stopFrameTimer();
+
+      const sessionId = sessionRef.current;
+      sessionRef.current = null;
+
+      stopCameraTracks();
+
+      if (sessionId) {
+        fetch(
+          `${AI_API_URL}/api/ai/live/stop?session_id=${encodeURIComponent(sessionId)}`,
+          { method: "POST", keepalive: true }
+        ).catch(() => {});
+      }
+    };
+  }, []);
+
+  const isRunning = liveStatus === "running";
+  const isStarting = liveStatus === "starting";
+  const isStopping = liveStatus === "stopping";
+
   return (
     <div className="page-stack">
       <div className="live-source-grid">
-        <PagePanel title="Camera feed" description="No live CCTV or camera source is configured.">
-          <div className="camera-empty">
-            <CameraOff size={34} />
-            <strong>No live camera configured</strong>
-            <span>Upload a supported video in the AI Analysis Studio to run YOLO + ByteTrack. No live feed is simulated here.</span>
-            <button type="button" className="primary-action" onClick={() => onNavigate("ai")}>Open AI Analysis Studio</button>
+        <PagePanel
+          title="Live camera monitoring"
+          description="Browser webcam frames are analyzed by the local YOLO + ByteTrack AI service."
+          actions={
+            <span className={`event-badge ${isRunning ? "severe" : "moderate"}`}>
+              {isRunning
+                ? "LIVE"
+                : isStarting
+                  ? "STARTING"
+                  : isStopping
+                    ? "STOPPING"
+                    : "OFFLINE"}
+            </span>
+          }
+        >
+          <div className="ai-video-wrap">
+            <div className="ai-video-label">
+              <Camera size={15} /> Camera preview
+            </div>
+
+            <video
+              ref={videoRef}
+              autoPlay
+              muted
+              playsInline
+              className="ai-video-player"
+              style={{
+                width: "100%",
+                display: "block",
+                background: "#080d16",
+                minHeight: "240px",
+                objectFit: "contain",
+              }}
+            />
+
+            <canvas ref={canvasRef} style={{ display: "none" }} />
           </div>
+
+          <div className="button-row">
+            <button
+              type="button"
+              className="primary-action"
+              onClick={startLiveMonitoring}
+              disabled={isRunning || isStarting || isStopping}
+            >
+              <Camera size={16} />
+              {isStarting ? "Starting camera..." : "Start Live Monitoring"}
+            </button>
+
+            <button
+              type="button"
+              className="icon-action"
+              onClick={stopLiveMonitoring}
+              disabled={!isRunning && !isStarting}
+            >
+              <CameraOff size={16} />
+              Stop Monitoring
+            </button>
+          </div>
+
+          {liveMessage && (
+            <p className={liveStatus === "error" ? "ai-error" : "subtle-note"}>
+              {liveStatus === "error" && <AlertTriangle size={15} />}
+              {liveStatus === "running" && <CheckCircle2 size={15} />}
+              {liveMessage}
+            </p>
+          )}
+
+          <div className="dsa-summary">
+            <div>
+              <span>Processed Frames</span>
+              <strong>{liveStats.processedFrames.toLocaleString()}</strong>
+            </div>
+            <div>
+              <span>Vehicle Count</span>
+              <strong>{liveStats.vehicleCount.toLocaleString()}</strong>
+            </div>
+            <div>
+              <span>Potential Indicators</span>
+              <strong>{liveStats.potentialEvents}</strong>
+            </div>
+            <div>
+              <span>Suspected Indicators</span>
+              <strong>{liveStats.suspectedEvents}</strong>
+            </div>
+            <div>
+              <span>Assessment</span>
+              <strong>{liveStats.classification}</strong>
+            </div>
+            <div>
+              <span>Last Frame</span>
+              <strong>
+                {liveStats.lastFrameAt
+                  ? liveStats.lastFrameAt.toLocaleTimeString()
+                  : "—"}
+              </strong>
+            </div>
+          </div>
+
+          <p className="ai-disclaimer">
+            <AlertTriangle size={13} /> AI visual indicators are not proof of a
+            crash. Independent validation is required before treating an event
+            as a confirmed accident.
+          </p>
         </PagePanel>
 
         <PagePanel
           title="Service and tracking status"
           description="Registration data is not the same as active video tracks."
-          actions={<button type="button" className="icon-action compact" onClick={onRefreshVehicles}><RefreshCw size={15} /><span>Refresh records</span></button>}
+          actions={
+            <button
+              type="button"
+              className="icon-action compact"
+              onClick={onRefreshVehicles}
+            >
+              <RefreshCw size={15} />
+              <span>Refresh records</span>
+            </button>
+          }
         >
           <div className="source-status-list">
-            <div><span>AI service</span><strong className={`state-text ${aiStatus.connection}`}>{aiStatus.connection}</strong></div>
-            <div><span>AI processing</span><strong>{aiStatus.connection === "online" ? aiStatus.processingStatus || "Idle" : "Unavailable"}</strong></div>
-            <div><span>C++ backend</span><strong className={`state-text ${backendStatus}`}>{backendStatus}</strong></div>
-            <div><span>Video tracking IDs</span><strong>Only available after video analysis</strong></div>
+            <div>
+              <span>AI service</span>
+              <strong className={`state-text ${aiStatus.connection}`}>
+                {aiStatus.connection}
+              </strong>
+            </div>
+            <div>
+              <span>AI processing</span>
+              <strong>
+                {isRunning
+                  ? "Live monitoring"
+                  : aiStatus.connection === "online"
+                    ? aiStatus.processingStatus || "Idle"
+                    : "Unavailable"}
+              </strong>
+            </div>
+            <div>
+              <span>C++ backend</span>
+              <strong className={`state-text ${backendStatus}`}>
+                {backendStatus}
+              </strong>
+            </div>
+            <div>
+              <span>Live tracking</span>
+              <strong>{isRunning ? "Active" : "Not active"}</strong>
+            </div>
           </div>
+
           <p className="subtle-note">
             {vehicleStatus === "online"
               ? `${vehicles.length} registered vehicle record${vehicles.length === 1 ? "" : "s"} returned by the backend; these are not ByteTrack detections.`
@@ -266,17 +769,35 @@ export function LiveMonitoringPage({
         </PagePanel>
       </div>
 
-      <PagePanel title="Recent AI-assisted event records" description="Potential and suspected classifications remain unconfirmed visual indicators.">
+      <PagePanel
+        title="Recent AI-assisted event records"
+        description="Potential and suspected classifications remain unconfirmed visual indicators."
+      >
         {recentAiEvents.length === 0 ? (
-          <div className="workspace-state"><FileWarning size={18} /><span>No potential or suspected AI event records are available from the backend.</span></div>
+          <div className="workspace-state">
+            <FileWarning size={18} />
+            <span>
+              No potential or suspected AI event records are available from the backend.
+            </span>
+          </div>
         ) : (
           <div className="activity-list">
             {recentAiEvents.map((event) => (
-              <article className="activity-row" key={event.id ?? event.eventId}>
+              <article
+                className="activity-row"
+                key={event.id ?? event.eventId}
+              >
                 <AlertTriangle size={17} className="warning-icon" />
                 <div className="activity-main">
-                  <strong>{eventName(event)} · {event.eventType}</strong>
-                  <span>{formatTime(event.timestamp)} · {event.vehicleIds?.length ? `Vehicle IDs ${event.vehicleIds.join(", ")}` : "Vehicle IDs unavailable"}</span>
+                  <strong>
+                    {eventName(event)} · {event.eventType}
+                  </strong>
+                  <span>
+                    {formatTime(event.timestamp)} ·{" "}
+                    {event.vehicleIds?.length
+                      ? `Vehicle IDs ${event.vehicleIds.join(", ")}`
+                      : "Vehicle IDs unavailable"}
+                  </span>
                 </div>
                 <span className="classification-note">AI-assisted indicator</span>
               </article>
@@ -284,9 +805,21 @@ export function LiveMonitoringPage({
           </div>
         )}
       </PagePanel>
+
+      <div className="button-row">
+        <button
+          type="button"
+          className="icon-action"
+          onClick={() => onNavigate("ai")}
+        >
+          <Download size={15} />
+          Open AI Analysis Studio
+        </button>
+      </div>
     </div>
   );
 }
+
 
 function incidentIcon(event) {
   const severity = normalizedSeverity(event).replace(/[^a-z-]/g, "") || "unknown";
