@@ -6,6 +6,7 @@ import {
   BellRing,
   BrainCircuit,
   Camera,
+  CarFront,
   Clock3,
   LayoutDashboard,
   MapPinned,
@@ -26,6 +27,7 @@ import {
 } from "./components/OperationsPages";
 import "./style.css";
 import "./workspace.css";
+import AccidentSimulation from "./components/AccidentSimulation";
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_API_URL || "http://localhost:8080";
 const AI_URL = import.meta.env.VITE_AI_API_URL || "http://127.0.0.1:5001";
@@ -35,6 +37,7 @@ const NOTIFICATION_URL =
 const NAV_ITEMS = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "live", label: "Live Monitoring", icon: Camera },
+  { id: "simulation", label: "Accident Simulation", icon: CarFront },
   { id: "ai", label: "AI Analysis Studio", icon: BrainCircuit },
   { id: "incidents", label: "Incident Center", icon: MapPinned },
   { id: "dsa", label: "DSA Monitoring", icon: Waypoints },
@@ -52,6 +55,7 @@ const PAGE_META = {
   analytics: ["Analytics & Insights", "Descriptive statistics computed from backend records."],
   history: ["History & Reports", "Searchable records returned by the C++ backend."],
   settings: ["Settings", "Service endpoints and available integrations."],
+  simulation: ["Accident Simulation","Real-world Karachi roads, vehicle movement and simulated emergency response.",],
 };
 
 const EMPTY_DSA_STATUS = {
@@ -329,6 +333,7 @@ function App() {
         </header>
 
         <div className="page-content">
+          {activePage === "simulation" && <AccidentSimulation />}
           {activePage === "overview" && <OverviewPage {...sharedPageProps} />}
           {activePage === "live" && <LiveMonitoringPage {...sharedPageProps} onRefreshVehicles={fetchVehicles} />}
           {activePage === "ai" && <AIDetection />}
