@@ -4,8 +4,10 @@ The backend uses PostgreSQL through libpq when PostgreSQL development files are
 available at configure time. `schema.sql` creates the required tables and
 indexes. Vehicle GPS updates, accident simulations, and sensor readings are
 stored in PostgreSQL. Accident and vehicle data are restored when the backend
-starts. The in-memory FIFO queue, severe-event stack, and priority queue remain
-the DSA processing structures.
+starts. The in-memory FIFO queue, bounded circular history, severe-event stack,
+and priority queue remain the DSA processing structures. The circular queue
+retains the newest 100 in-memory records in chronological order; persistent
+history is read from PostgreSQL when enabled.
 
 Reapplying `schema.sql` adds the AI event metadata columns and unique
 `ai_event_id` index to an existing `accidents` table. AI event retries use this
@@ -139,10 +141,19 @@ override it for local testing or deployment.
 ```
 
 Simulation coordinates are map-derived demo data, not vehicle GPS. The
-simulation notification endpoint requires an incident ID and sends only to the
-two configured demo contacts. Duplicate requests are suppressed for the
-notification service process lifetime; delivery state is not persisted across
-notification service restarts.
+simulation severity is calculated by the existing C++ decision tree from the
+speed-derived score `min(100, int((speedA + speedB) * 1.25))`: `Severe` at 75+,
+`Moderate` at 42-74, `Minor` at 18-41, and `No Accident` below 18. This is demo
+scoring, not a sensor-measured impact or physical crash reconstruction.
+
+The C++ collision endpoint does not send SMS. The notification service's
+simulation endpoint accepts only backend-classified `Severe` events and sends
+DEMO-only alerts to configured demo recipients. `SMS_TEST_MODE` defaults to
+safe mode; set it to `false` explicitly to allow Twilio calls. Safe mode
+validates the test but sends no message and must not be displayed as `SENT`.
+There is no verified hospital contact registry, real emergency-recipient
+routing, or persistent notification-result table in this simulation flow.
+Provider acceptance and actual handset delivery are distinct statuses.
 
 Database failures return HTTP 503 for affected operations. All data-bearing SQL
 statements use libpq parameterized queries. GPS locations, accidents, and sensor

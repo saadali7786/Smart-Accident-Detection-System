@@ -185,6 +185,50 @@ class CppBackendApiTests(unittest.TestCase):
         self.assertEqual(first["severity"], "Severe")
         self.assertEqual(second["severity"], "Severe")
 
+    def test_existing_decision_tree_returns_all_four_severity_levels(self):
+        cases = (
+            (5, "No Accident"),
+            (10, "Minor"),
+            (20, "Moderate"),
+            (30, "Severe"),
+        )
+        for speed, expected_severity in cases:
+            with self.subTest(speed=speed):
+                code, event = self.add_simulated_collision(speed)
+                self.assertEqual(code, 200)
+                self.assertEqual(event["severity"], expected_severity)
+                self.assertEqual(event["processingStatus"], "Pending")
+                self.assertEqual(event["alertStatus"], "Not sent")
+
+    def test_circular_history_retains_latest_events_in_order(self):
+        for index in range(105):
+            code, event = self.request(
+                "POST",
+                "/api/accident",
+                payload={
+                    "eventId": "ring-{}".format(index),
+                    "speedA": 10,
+                    "speedB": 10,
+                    "massA": 1500,
+                    "massB": 1500,
+                    "collisionType": "head-on",
+                },
+            )
+            self.assertEqual(code, 200)
+            self.assertEqual(event["severity"], "Minor")
+
+        _, dsa = self.request("GET", "/api/dsa/status")
+        self.assertEqual(
+            [event["id"] for event in dsa["historyEvents"]],
+            list(range(6, 106)),
+        )
+        _, history = self.request("GET", "/api/accidents/history")
+        self.assertEqual(history["totalRecords"], 100)
+        self.assertEqual(
+            [event["id"] for event in history["accidents"]],
+            list(range(6, 106)),
+        )
+
     def test_priority_queue_orders_by_severity_and_priority_processes_top(self):
         low_code, low = self.add_simulated_collision(10)
         high_code, high = self.add_simulated_collision(40)
@@ -249,6 +293,9 @@ class CppBackendApiTests(unittest.TestCase):
         self.assertFalse(first["duplicate"])
         self.assertTrue(duplicate["duplicate"])
         self.assertEqual(first["id"], duplicate["id"])
+        self.assertEqual(first["impactScore"], duplicate["impactScore"])
+        self.assertEqual(first["severity"], duplicate["severity"])
+        self.assertEqual(duplicate["processingStatus"], "Pending")
         self.assertEqual(first["eventId"], event_id)
 
         _, status = self.request("GET", "/api/dsa/status")

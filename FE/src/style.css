@@ -2123,3 +2123,472 @@ th.sortable:hover {
     min-width: 0;
   }
 }
+
+/* Multi-vehicle road map */
+.traffic-page {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.traffic-location-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.traffic-location-controls > div {
+  min-width: 0 !important;
+}
+
+.traffic-location-controls label {
+  gap: 4px !important;
+  color: #74869c !important;
+  font-size: 9px !important;
+  font-weight: 700 !important;
+  letter-spacing: .04em;
+  text-transform: uppercase;
+}
+
+.traffic-location-controls input {
+  height: 38px;
+  padding: 8px 10px !important;
+  background: #101a27 !important;
+  border-color: #293a4f !important;
+  font-size: 12px;
+}
+
+.traffic-build-route,
+.traffic-control-button {
+  min-height: 36px;
+  padding: 0 12px;
+  color: #dfe9f3;
+  background: #172436;
+  border: 1px solid #34485e;
+  border-radius: 7px;
+  font-size: 11px;
+  font-weight: 700;
+  transition: background-color .15s ease, border-color .15s ease;
+}
+
+.traffic-build-route {
+  color: #fff;
+  background: #1767c2;
+  border-color: #3184dc;
+  white-space: nowrap;
+}
+
+.traffic-build-route:hover:not(:disabled) {
+  background: #247bd9;
+}
+
+.traffic-control-button:hover:not(:disabled) {
+  background: #263b52;
+  border-color: #55708c;
+}
+
+.traffic-control-button:disabled {
+  opacity: .48;
+}
+
+.traffic-control-start {
+  color: #fff;
+  background: #167447;
+  border-color: #278459;
+}
+
+.traffic-control-start:hover:not(:disabled) {
+  background: #1d8a56;
+}
+
+.traffic-demo-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 10px;
+  color: #f3c574;
+  background: #302719;
+  border: 1px solid #5b492d;
+  border-radius: 7px;
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: .06em;
+  white-space: nowrap;
+}
+
+.traffic-route-error {
+  padding: 9px 11px;
+  color: #ffd2cc;
+  background: #3a2024;
+  border: 1px solid #784046;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
+.traffic-map-card {
+  min-width: 0;
+  overflow: hidden;
+  background: #e7e8e4;
+  border: 1px solid #33475b;
+  border-radius: 11px;
+  box-shadow: 0 8px 26px #0003;
+}
+
+.traffic-map-frame {
+  position: relative;
+  height: clamp(450px, 72vh, 790px);
+  min-width: 0;
+  overflow: hidden;
+  background: #e8e9e5;
+}
+
+.traffic-map-frame .leaflet-container {
+  height: 100%;
+  width: 100%;
+  font-family: inherit;
+}
+
+.leaflet-div-icon.topdown-car-icon {
+  background: transparent;
+  border: 0;
+}
+
+.topdown-car {
+  display: grid;
+  width: 20px;
+  height: 34px;
+  place-items: center;
+  transform-origin: center;
+  filter: drop-shadow(0 1px 2px #17202a99);
+  transition: transform 100ms linear;
+  will-change: transform;
+}
+
+.topdown-car svg {
+  display: block;
+  overflow: visible;
+}
+
+.traffic-map-live-status {
+  position: absolute;
+  z-index: 1000;
+  top: 12px;
+  right: 12px;
+  display: flex;
+  gap: 12px;
+  padding: 8px 11px;
+  color: #263442;
+  background: #fffffff0;
+  border: 1px solid #b9c3c9;
+  border-radius: 8px;
+  box-shadow: 0 2px 8px #0002;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.traffic-map-controls {
+  position: absolute;
+  z-index: 1000;
+  bottom: 12px;
+  left: 12px;
+  display: flex;
+  max-width: calc(100% - 24px);
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  background: #0c1724ee;
+  border: 1px solid #43566b;
+  border-radius: 9px;
+  box-shadow: 0 3px 14px #0005;
+  backdrop-filter: blur(8px);
+}
+
+.traffic-map-controls .traffic-control-button {
+  min-height: 32px;
+  padding: 0 9px;
+  font-size: 10px;
+}
+
+.traffic-select-control {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  padding: 0 6px;
+  color: #c4d2df;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.traffic-select-control select {
+  max-width: 75px;
+  padding: 6px 5px;
+  color: #e6edf5;
+  background: #142334;
+  border: 1px solid #43566b;
+  border-radius: 5px;
+  font-size: 10px;
+}
+
+.traffic-demo-alert-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 32px;
+  padding: 0 5px;
+  color: #efc479;
+  font-size: 9px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.traffic-demo-alert-control input {
+  accent-color: #d79a35;
+}
+
+.traffic-map-legend {
+  position: absolute;
+  z-index: 1000;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+  padding: 7px 9px;
+  color: #2c3944;
+  background: #fffffff0;
+  border: 1px solid #b9c3c9;
+  border-radius: 7px;
+  box-shadow: 0 2px 8px #0002;
+  font-size: 9px;
+  font-weight: 700;
+}
+
+.traffic-map-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.traffic-legend-line {
+  display: inline-block;
+  width: 17px;
+  height: 4px;
+  border-radius: 4px;
+}
+
+.traffic-legend-line.selected {
+  background: #2478f2;
+}
+
+.traffic-legend-line.alternative {
+  background: #1c9a58;
+}
+
+.traffic-legend-line.hospital {
+  height: 0;
+  border-top: 3px dashed #d97706;
+}
+
+.traffic-response-card {
+  display: grid;
+  gap: 9px;
+  padding: 12px 14px;
+  color: #e5edf7;
+  background: #111b29;
+  border: 1px solid #7d3b44;
+  border-left: 3px solid #dc5d63;
+  border-radius: 9px;
+}
+
+.traffic-response-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.traffic-response-title {
+  display: grid;
+  gap: 3px;
+  min-width: 120px;
+}
+
+.traffic-response-title strong {
+  color: #ff9a9d;
+  font-size: 13px;
+}
+
+.traffic-response-title span {
+  color: #d8e2ed;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.traffic-response-facts {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+}
+
+.traffic-response-facts span {
+  display: grid;
+  gap: 3px;
+  color: #e1e9f1;
+  font-size: 11px;
+}
+
+.traffic-response-facts small {
+  color: #8ea1b5;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+
+.traffic-map-link,
+.traffic-hospital-row a {
+  color: #83baff;
+  font-size: 11px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.traffic-map-link:hover,
+.traffic-hospital-row a:hover {
+  text-decoration: underline;
+}
+
+.traffic-notification-status,
+.traffic-response-details {
+  margin: 0;
+  color: #c9d4df;
+  font-size: 11px;
+}
+
+.traffic-notification-status button {
+  margin-left: 8px;
+  padding: 4px 8px;
+  color: #fff;
+  background: #273c53;
+  border: 1px solid #435c75;
+  border-radius: 5px;
+}
+
+.traffic-response-details {
+  padding-top: 8px;
+  border-top: 1px solid #29394a;
+}
+
+.traffic-response-details summary {
+  cursor: pointer;
+  color: #b7c8d8;
+  font-weight: 700;
+}
+
+.traffic-response-details p {
+  margin: 8px 0;
+}
+
+.traffic-hospital-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 5px 12px;
+  padding: 8px 0;
+  border-top: 1px solid #29394a;
+  font-size: 11px;
+}
+
+.traffic-hospital-row small {
+  grid-column: 1 / -1;
+  color: #9eafbf;
+}
+
+.traffic-response-note {
+  color: #9eafbf;
+  font-size: 10px;
+}
+
+@media (max-width: 760px) {
+  .traffic-location-controls {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .traffic-build-route,
+  .traffic-demo-badge {
+    justify-self: start;
+  }
+
+  .traffic-map-frame {
+    height: clamp(430px, 68vh, 650px);
+  }
+
+  .traffic-map-controls {
+    right: 10px;
+    bottom: 10px;
+    left: 10px;
+    max-width: none;
+    gap: 5px;
+  }
+
+  .traffic-map-live-status {
+    top: 10px;
+    right: 10px;
+    gap: 7px;
+    padding: 7px 8px;
+    font-size: 9px;
+  }
+
+  .traffic-map-legend {
+    top: 10px;
+    left: 10px;
+    gap: 6px;
+    padding: 6px 7px;
+    font-size: 8px;
+  }
+}
+
+@media (max-width: 480px) {
+  .traffic-location-controls {
+    grid-template-columns: 1fr;
+  }
+
+  .traffic-demo-badge,
+  .traffic-build-route {
+    min-height: 33px;
+  }
+
+  .traffic-map-frame {
+    height: 64vh;
+    min-height: 390px;
+  }
+
+  .traffic-map-controls {
+    gap: 4px;
+    padding: 6px;
+  }
+
+  .traffic-map-controls .traffic-control-button {
+    padding: 0 7px;
+  }
+
+  .traffic-map-legend {
+    top: 54px;
+    right: 10px;
+    left: 10px;
+    justify-content: center;
+  }
+
+  .traffic-response-summary {
+    align-items: flex-start;
+  }
+
+  .traffic-response-facts {
+    flex-basis: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}

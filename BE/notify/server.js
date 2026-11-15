@@ -7,6 +7,11 @@ const twilio = require("twilio");
 const { Resend } = require("resend");
 const rateLimit = require("express-rate-limit");
 const { createIdempotentAction } = require("./simulation-idempotency");
+const {
+  buildSimulationMessage,
+  isSmsTestMode,
+  validateSimulationAlert,
+} = require("./simulation-alert");
 
 const app = express();
 const sendSimulationOnce = createIdempotentAction();
@@ -48,6 +53,7 @@ const demoNumbers = [
   process.env.DEMO_CONTACT_PHONE_1,
   process.env.DEMO_CONTACT_PHONE_2,
 ].filter(validPhone);
+const smsTestMode = isSmsTestMode(process.env.SMS_TEST_MODE);
 
 app.get("/api/health", (req, res) => {
   res.json({
@@ -55,30 +61,38 @@ app.get("/api/health", (req, res) => {
     service: "notification-service",
     smsConfigured: Boolean(smsClient),
     demoContactsConfigured: demoNumbers.length,
+    smsTestMode,
   });
 });
 
 // DEMO ACCIDENT SMS
 app.post("/api/simulation-accident", async (req, res) => {
-  const { incidentId, latitude, longitude, timestamp, hospital } =
-    req.body || {};
-
-  if (
-    typeof incidentId !== "string" ||
-    !/^[A-Za-z0-9._:-]{1,160}$/.test(incidentId) ||
-    typeof latitude !== "number" ||
-    typeof longitude !== "number" ||
-    !Number.isFinite(latitude) ||
-    !Number.isFinite(longitude) ||
-    latitude < -90 ||
-    latitude > 90 ||
-    longitude < -180 ||
-    longitude > 180
-  ) {
+  const payload = req.body || {};
+  const validationError = validateSimulationAlert(payload);
+  if (validationError) {
     return res.status(400).json({
       success: false,
-      error: "A valid incident ID and accident latitude and longitude are required.",
+      error: validationError,
     });
+  }
+  const { incidentId } = payload;
+
+  if (smsTestMode) {
+    const outcome = await sendSimulationOnce(incidentId, async () => ({
+      statusCode: 200,
+      body: {
+        success: true,
+        status: "test_mode",
+        sent: false,
+        sentCount: 0,
+        totalContacts: demoNumbers.length,
+        message:
+          "SAFE TEST MODE: the severe-incident SMS was validated, but no message was sent.",
+      },
+    }));
+    return res
+      .status(outcome.result.statusCode)
+      .json({ ...outcome.result.body, duplicate: outcome.duplicate });
   }
 
   if (!smsClient) {
@@ -102,48 +116,7 @@ app.post("/api/simulation-accident", async (req, res) => {
     });
   }
 
-  const mapsUrl = `https://www.google.com/maps?q=${latitude},${longitude}`;
-
-  const hospitalName =
-    typeof hospital?.name === "string" && hospital.name.trim()
-      ? hospital.name.trim().slice(0, 150)
-      : "Hospital information unavailable";
-
-  const hospitalDistance =
-    Number.isFinite(hospital?.distance) && hospital.distance >= 0
-      ? `${hospital.distance.toFixed(2)} km`
-      : "Unknown";
-
-  const hospitalMapsUrl =
-    Number.isFinite(hospital?.lat) &&
-    Number.isFinite(hospital?.lon) &&
-    Math.abs(hospital.lat) <= 90 &&
-    Math.abs(hospital.lon) <= 180
-      ? `https://www.google.com/maps?q=${hospital.lat},${hospital.lon}`
-      : "Not available";
-
-  const accidentTime =
-    typeof timestamp === "string" && timestamp.length <= 60
-      ? timestamp
-      : new Date().toISOString();
-
-  const message = [
-    "🚨 SIMULATED ACCIDENT ALERT - DEMO ONLY",
-    `Incident ID: ${incidentId}`,
-    "",
-    `Latitude: ${latitude}`,
-    `Longitude: ${longitude}`,
-    `Time: ${accidentTime}`,
-    "",
-    `Nearest hospital: ${hospitalName}`,
-    `Hospital distance: ${hospitalDistance}`,
-    `Hospital map: ${hospitalMapsUrl}`,
-    "",
-    `Accident location: ${mapsUrl}`,
-    "",
-    "This is a software simulation, NOT a real emergency report.",
-    "No emergency service has been contacted.",
-  ].join("\n");
+  const message = buildSimulationMessage(payload);
 
   try {
     const outcome = await sendSimulationOnce(incidentId, async () => {

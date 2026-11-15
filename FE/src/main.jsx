@@ -55,7 +55,10 @@ const PAGE_META = {
   analytics: ["Analytics & Insights", "Descriptive statistics computed from backend records."],
   history: ["History & Reports", "Searchable records returned by the C++ backend."],
   settings: ["Settings", "Service endpoints and available integrations."],
-  simulation: ["Accident Simulation","Real-world Karachi roads, vehicle movement and simulated emergency response.",],
+  simulation: [
+    "Accident Detection & Emergency Response",
+    "Multi-vehicle collision simulation, C++ severity classification, and incident response.",
+  ],
 };
 
 const EMPTY_DSA_STATUS = {

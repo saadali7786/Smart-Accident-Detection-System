@@ -3,6 +3,7 @@
 #define NOMINMAX
 
 #include "database.h"
+#include "circular_queue.h"
 #include "json_parser.h"
 
 #include <iostream>
@@ -13,6 +14,7 @@
 #include <unordered_map>
 #include <mutex>
 #include <thread>
+
 #include <ctime>
 #include <cmath>
 #include <string>
@@ -93,14 +95,12 @@ queue<AccidentEvent> accidentQueue;
 // Stack: stores the most recent severe accident events.
 stack<AccidentEvent> severeAccidentStack;
 
-// Stores accident records independently of the Queue.
-vector<AccidentEvent> accidentHistory;
+// Retain the newest accident records in chronological order.
+constexpr size_t MAX_HISTORY = 100;
+CircularQueue<AccidentEvent, MAX_HISTORY> accidentHistory;
 
 // Accident IDs start from 1.
 std::uint64_t nextAccidentId = 1;
-
-// Maximum number of records retained in memory.
-const size_t MAX_HISTORY = 100;
 
 unsigned long processedAccidentEvents = 0;
 unsigned long totalEnqueuedEvents = 0;
@@ -232,11 +232,7 @@ bool loadPersistentState(std::string &error)
         }
         ++totalEnqueuedEvents;
 
-        if (accidentHistory.size() >= MAX_HISTORY)
-        {
-            accidentHistory.erase(accidentHistory.begin());
-        }
-        accidentHistory.push_back(event);
+        accidentHistory.push(event);
 
         if (event.id >= nextAccidentId)
         {
@@ -1111,11 +1107,7 @@ if (headers.find("GET /api/vehicles ") == 0)
 
         seenAIEventIds[eventId] = newEvent.id;
         accidentQueue.push(newEvent);
-        if (accidentHistory.size() >= MAX_HISTORY)
-        {
-            accidentHistory.erase(accidentHistory.begin());
-        }
-        accidentHistory.push_back(newEvent);
+        accidentHistory.push(newEvent);
         updatePriorityQueue();
         ++totalEnqueuedEvents;
 
@@ -1264,6 +1256,22 @@ if (headers.find("GET /api/vehicles ") == 0)
         const auto existingEvent = seenAIEventIds.find(eventId);
         if (existingEvent != seenAIEventIds.end())
         {
+            for (size_t index = 0; index < accidentHistory.size(); ++index)
+            {
+                const AccidentEvent &saved = accidentHistory[index];
+                if (saved.id == existingEvent->second)
+                {
+                    return getResponse(
+                        200, "{\"success\":true,\"duplicate\":true,\"eventId\":" +
+                                 jsonEscape(eventId) + ",\"id\":" +
+                                 to_string(saved.id) + ",\"impactScore\":" +
+                                 to_string(saved.impactScore) + ",\"severity\":" +
+                                 jsonEscape(saved.severity) +
+                                 ",\"processingStatus\":" +
+                                 jsonEscape(saved.processed ? "Processed" : "Pending") +
+                                 "}");
+                }
+            }
             return getResponse(
                 200, "{\"success\":true,\"duplicate\":true,\"eventId\":" +
                          jsonEscape(eventId) + ",\"id\":" +
@@ -1388,13 +1396,8 @@ if (headers.find("GET /api/vehicles ") == 0)
         pushSevereEvent(newEvent);
     }
 
-    // Save independently in accident history.
-    if (accidentHistory.size() >= MAX_HISTORY)
-    {
-        accidentHistory.erase(accidentHistory.begin());
-    }
-
-    accidentHistory.push_back(newEvent);
+    // Save independently in the bounded circular accident history.
+    accidentHistory.push(newEvent);
     updatePriorityQueue();
 
     totalEnqueuedEvents++;
@@ -1403,7 +1406,6 @@ if (headers.find("GET /api/vehicles ") == 0)
          << " | Severity: " << newEvent.severity
          << " | Status: Pending" << endl;
 
-    bool alert = (severity == "Severe");
     string result =
         "{\"success\":true,"
         "\"id\":" +
@@ -1415,14 +1417,11 @@ if (headers.find("GET /api/vehicles ") == 0)
         to_string(score) + ","
                            "\"severity\":\"" +
         severity + "\","
-                   "\"alertStatus\":\"" +
-        string(alert ? "Emergency Alert Simulated" : "No Alert") + "\","
-                                                                   "\"emergencyResponse\":{\"triggered\":" +
-        string(alert ? "true" : "false") + ","
-                                           "\"message\":\"" +
-        string(alert ? "Simulated emergency notification generated"
-                     : "No emergency notification needed") +
-        "\"},"
+                   "\"processingStatus\":\"Pending\","
+                   "\"alertStatus\":\"Not sent\","
+                   "\"emergencyResponse\":{\"triggered\":false,"
+                   "\"status\":\"not_sent_by_cpp\","
+                   "\"message\":\"The C++ backend does not send SMS notifications.\"},"
         "\"note\":\"Simulation only. No real emergency services contacted.\"}";
 
     cout << "Score: " << score << " | Severity: " << severity << '\n';
