@@ -213,6 +213,70 @@ class CppBackendApiTests(unittest.TestCase):
             [first["event"]["id"], second["event"]["id"]],
         )
 
+    def test_simulation_event_preserves_metadata_and_deduplicates(self):
+        event_id = "simulation-{}".format(uuid.uuid4().hex)
+        payload = {
+            "eventId": event_id,
+            "timestamp": "2026-11-15T10:30:00.000Z",
+            "speedA": 40,
+            "speedB": 40,
+            "massA": 1500,
+            "massB": 1500,
+            "collisionType": "head-on",
+            "impactG": 1.0,
+            "latitude": 24.9206,
+            "longitude": 67.0901,
+            "vehicleAId": "SIM-CAR-A",
+            "vehicleBId": "SIM-CAR-B",
+            "evidence": [
+                {
+                    "type": "simulation_two_routes",
+                    "label": "Two independent routes reached the intersection.",
+                },
+                {
+                    "type": "simulated_gps",
+                    "label": "Map-derived, not vehicle GPS.",
+                },
+            ],
+        }
+
+        first_code, first = self.request("POST", "/api/accident", payload)
+        duplicate_code, duplicate = self.request(
+            "POST", "/api/accident", payload
+        )
+        self.assertEqual(first_code, 200)
+        self.assertEqual(duplicate_code, 200)
+        self.assertFalse(first["duplicate"])
+        self.assertTrue(duplicate["duplicate"])
+        self.assertEqual(first["id"], duplicate["id"])
+        self.assertEqual(first["eventId"], event_id)
+
+        _, status = self.request("GET", "/api/dsa/status")
+        self.assertEqual(len(status["queueEvents"]), 1)
+        self.assertEqual(len(status["historyEvents"]), 1)
+        stored = status["historyEvents"][0]
+        self.assertEqual(stored["eventId"], event_id)
+        self.assertEqual(stored["eventType"], "simulation_collision")
+        self.assertEqual(stored["timestamp"], payload["timestamp"])
+        self.assertEqual(stored["vehicleIds"], ["SIM-CAR-A", "SIM-CAR-B"])
+        self.assertEqual(stored["evidence"], payload["evidence"])
+        self.assertEqual(stored["latitude"], payload["latitude"])
+        self.assertEqual(stored["longitude"], payload["longitude"])
+
+    def test_simulation_event_rejects_unsafe_event_ids(self):
+        payload = {
+            "eventId": "simulation event",
+            "speedA": 40,
+            "speedB": 40,
+            "massA": 1500,
+            "massB": 1500,
+            "collisionType": "head-on",
+        }
+        code, result = self.request("POST", "/api/accident", payload)
+
+        self.assertEqual(code, 400)
+        self.assertIn("eventId", result["error"])
+
     def test_potential_event_below_configured_threshold_is_rejected(self):
         code, response = self.request(
             "POST",

@@ -34,6 +34,8 @@ const EVIDENCE_LABELS = {
   sudden_deceleration: "Sudden-deceleration indicator",
   abrupt_direction_change: "Abrupt direction-change indicator",
   stopped_after_possible_collision: "Sustained stop after interaction",
+  simulation_two_routes: "Two simulated road routes converged",
+  simulated_gps: "Map-derived demo coordinates, not vehicle GPS",
 };
 
 function hasIncidentLocation(event) {
@@ -97,6 +99,7 @@ function eventClass(event) {
 
 function recordSource(event) {
   if (CLASSIFICATIONS.includes(event?.eventType)) return "AI-assisted visual indicator";
+  if (event?.eventType === "simulation_collision") return "Map simulation · DEMO ONLY";
   return "Backend record · source not specified";
 }
 

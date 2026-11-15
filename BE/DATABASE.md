@@ -111,6 +111,12 @@ override it for local testing or deployment.
   GPS point from PostgreSQL.
 - Existing `POST /api/accident` stores the accident before adding it to the
   in-memory DSA structures.
+- `POST /api/accident` also accepts optional `eventId`, `timestamp`, `evidence`,
+  `vehicleAId`, and `vehicleBId` fields for simulated collisions. A supplied
+  event ID is idempotent: a retry does not enqueue a second DSA event. With
+  PostgreSQL enabled, the ID and incident metadata use the existing unique
+  `ai_event_id` index and survive backend restarts; in memory-only mode,
+  deduplication lasts only for the backend process lifetime.
 - `POST /api/ai/event` accepts validated, classified AI events while preserving
   their video timestamp, vehicle IDs, confidence, event type, evidence, and
   optional GPS coordinates. It does not interpret video-only input as a
@@ -131,6 +137,12 @@ override it for local testing or deployment.
   "gyroscopeZ": 0.03
 }
 ```
+
+Simulation coordinates are map-derived demo data, not vehicle GPS. The
+simulation notification endpoint requires an incident ID and sends only to the
+two configured demo contacts. Duplicate requests are suppressed for the
+notification service process lifetime; delivery state is not persisted across
+notification service restarts.
 
 Database failures return HTTP 503 for affected operations. All data-bearing SQL
 statements use libpq parameterized queries. GPS locations, accidents, and sensor

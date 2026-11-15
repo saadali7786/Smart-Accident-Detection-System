@@ -211,6 +211,11 @@ function App() {
     fetchNotificationStatus,
   ]);
 
+  const refreshIncidentData = useCallback(
+    () => Promise.all([fetchDsaStatus(), fetchHistory()]),
+    [fetchDsaStatus, fetchHistory]
+  );
+
   useEffect(() => {
     refreshAll();
     const timer = window.setInterval(refreshAll, 15000);
@@ -333,7 +338,13 @@ function App() {
         </header>
 
         <div className="page-content">
-          {activePage === "simulation" && <AccidentSimulation />}
+          {activePage === "simulation" && (
+            <AccidentSimulation
+              backendUrl={BACKEND_URL}
+              notificationUrl={NOTIFICATION_URL}
+              onIncidentSaved={refreshIncidentData}
+            />
+          )}
           {activePage === "overview" && <OverviewPage {...sharedPageProps} />}
           {activePage === "live" && <LiveMonitoringPage {...sharedPageProps} onRefreshVehicles={fetchVehicles} />}
           {activePage === "ai" && <AIDetection />}

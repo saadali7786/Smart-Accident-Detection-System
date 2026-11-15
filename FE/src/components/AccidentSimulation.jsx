@@ -1,5 +1,5 @@
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import {
   CircleMarker,
@@ -10,8 +10,25 @@ import {
   useMap,
 } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
+import {
+  bearingAtFraction,
+  buildRoutePair,
+  distanceKm,
+  pointAtFraction,
+} from "./accidentSimulationUtils";
 
 const KARACHI_CENTER = [24.8607, 67.0011];
+const COLLISION_INTERSECTION = {
+  name: "NIPA Chowk",
+  coordinates: [24.9179812, 67.0969429],
+};
+const ARRIVAL_BEARINGS = [135, 315];
+const SIMULATION_DURATION_MS = 8500;
+const SIMULATION_SPEED_KMH = 40;
+const DEFAULT_BACKEND_URL =
+  import.meta.env.VITE_BACKEND_API_URL || "http://localhost:8080";
+const DEFAULT_NOTIFICATION_URL =
+  import.meta.env.VITE_NOTIFICATION_API_URL || "http://127.0.0.1:3001";
 
 const LOCATIONS = [
   { name: "Clifton", lat: 24.8138, lon: 67.0305 },
@@ -23,6 +40,57 @@ const LOCATIONS = [
   { name: "Jinnah Airport", lat: 24.9065, lon: 67.1609 },
   { name: "NIPA", lat: 24.9206, lon: 67.0901 },
 ];
+
+async function fetchRoadRoute(start, arrivalBearing) {
+  const url =
+    `https://router.project-osrm.org/route/v1/driving/` +
+    `${start.lon},${start.lat};${COLLISION_INTERSECTION.coordinates[1]},` +
+    `${COLLISION_INTERSECTION.coordinates[0]}?overview=full&geometries=geojson&steps=false` +
+    `&bearings=;${arrivalBearing},50`;
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(20000),
+  });
+
+  if (!response.ok) {
+    throw new Error("Road routing service unavailable.");
+  }
+
+  const result = await response.json();
+  if (result.code !== "Ok" || !result.routes?.length) {
+    throw new Error(`Could not route a vehicle from ${start.name}.`);
+  }
+
+  return {
+    start,
+    distance: result.routes[0].distance / 1000,
+    coordinates: result.routes[0].geometry.coordinates.map(
+      ([lon, lat]) => [lat, lon]
+    ),
+  };
+}
+
+async function postJson(url, payload) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal: AbortSignal.timeout(10000),
+  });
+  let result;
+
+  try {
+    result = await response.json();
+  } catch {
+    throw new Error(`The service returned an invalid response (${response.status}).`);
+  }
+
+  if (!response.ok || result?.success === false) {
+    throw new Error(
+      result?.error || result?.message || `Request failed (${response.status}).`
+    );
+  }
+  return result;
+}
 
 // Original top-view sedan and SUV designs.
 const carIcon = (color, rotation = 0, type = "sedan") => {
@@ -91,70 +159,6 @@ const accidentIcon = L.divIcon({
   iconAnchor: [20, 20],
 });
 
-function distanceKm(a, b) {
-  const rad = (value) => (value * Math.PI) / 180;
-  const dLat = rad(b[0] - a[0]);
-  const dLon = rad(b[1] - a[1]);
-  const lat1 = rad(a[0]);
-  const lat2 = rad(b[0]);
-
-  const value =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
-
-  return 6371 * 2 * Math.atan2(Math.sqrt(value), Math.sqrt(1 - value));
-}
-
-function pointAtFraction(points, fraction) {
-  if (!points?.length) return KARACHI_CENTER;
-  if (points.length === 1) return points[0];
-
-  const lengths = [];
-  let total = 0;
-
-  for (let i = 1; i < points.length; i += 1) {
-    const length = distanceKm(points[i - 1], points[i]);
-    lengths.push(length);
-    total += length;
-  }
-
-  let target = total * Math.max(0, Math.min(1, fraction));
-
-  for (let i = 0; i < lengths.length; i += 1) {
-    if (target <= lengths[i]) {
-      const ratio = lengths[i] === 0 ? 0 : target / lengths[i];
-
-      return [
-        points[i][0] + (points[i + 1][0] - points[i][0]) * ratio,
-        points[i][1] + (points[i + 1][1] - points[i][1]) * ratio,
-      ];
-    }
-
-    target -= lengths[i];
-  }
-
-  return points[points.length - 1];
-}
-
-function bearingAtFraction(points, fraction) {
-  const before = pointAtFraction(points, Math.max(0, fraction - 0.002));
-  const after = pointAtFraction(points, Math.min(1, fraction + 0.002));
-
-  const toRad = (value) => (value * Math.PI) / 180;
-  const toDeg = (value) => (value * 180) / Math.PI;
-
-  const lat1 = toRad(before[0]);
-  const lat2 = toRad(after[0]);
-  const dLon = toRad(after[1] - before[1]);
-
-  const y = Math.sin(dLon) * Math.cos(lat2);
-  const x =
-    Math.cos(lat1) * Math.sin(lat2) -
-    Math.sin(lat1) * Math.cos(lat2) * Math.cos(dLon);
-
-  return (toDeg(Math.atan2(y, x)) + 360) % 360;
-}
-
 function FitRoute({ coordinates }) {
   const map = useMap();
 
@@ -167,8 +171,12 @@ function FitRoute({ coordinates }) {
   return null;
 }
 
-export default function AccidentSimulation() {
-  const [route, setRoute] = useState(null);
+export default function AccidentSimulation({
+  backendUrl = DEFAULT_BACKEND_URL,
+  notificationUrl = DEFAULT_NOTIFICATION_URL,
+  onIncidentSaved,
+}) {
+  const [routes, setRoutes] = useState(null);
   const [progress, setProgress] = useState(0);
   const [status, setStatus] = useState("idle");
   const [loading, setLoading] = useState(false);
@@ -176,58 +184,87 @@ export default function AccidentSimulation() {
   const [incident, setIncident] = useState(null);
   const [hospitals, setHospitals] = useState([]);
   const [hospitalStatus, setHospitalStatus] = useState("idle");
+  const [incidentSaveState, setIncidentSaveState] = useState({
+    status: "idle",
+    message: "",
+  });
+  const [notificationDelivery, setNotificationDelivery] = useState(null);
+  const [sendDemoAlerts, setSendDemoAlerts] = useState(false);
+  const collisionHandledRef = useRef(false);
+  const savePendingRef = useRef(new Set());
+  const notificationAttemptsRef = useRef(new Set());
+  const notificationPendingRef = useRef(new Set());
+  const notificationSentRef = useRef(new Set());
 
   const loadRandomRoute = useCallback(async () => {
     setLoading(true);
     setError("");
     setStatus("idle");
     setProgress(0);
+    setRoutes(null);
     setIncident(null);
     setHospitals([]);
     setHospitalStatus("idle");
+    setIncidentSaveState({ status: "idle", message: "" });
+    setNotificationDelivery(null);
+    collisionHandledRef.current = false;
 
     try {
-      const firstIndex = Math.floor(Math.random() * LOCATIONS.length);
-      let secondIndex = Math.floor(Math.random() * LOCATIONS.length);
-
-      while (secondIndex === firstIndex) {
-        secondIndex = Math.floor(Math.random() * LOCATIONS.length);
-      }
-
-      const start = LOCATIONS[firstIndex];
-      const end = LOCATIONS[secondIndex];
-
-      const url =
-        `https://router.project-osrm.org/route/v1/driving/` +
-        `${start.lon},${start.lat};${end.lon},${end.lat}` +
-        `?overview=full&geometries=geojson&steps=false`;
-
-      const response = await fetch(url, {
-        signal: AbortSignal.timeout(20000),
-      });
-
-      if (!response.ok) {
-        throw new Error("Road routing service unavailable.");
-      }
-
-      const result = await response.json();
-
-      if (result.code !== "Ok" || !result.routes?.length) {
-        throw new Error("Could not find a road route. Please try again.");
-      }
-
-      const coordinates = result.routes[0].geometry.coordinates.map(
-        ([lon, lat]) => [lat, lon]
+      const starts = LOCATIONS.filter(
+        (location) =>
+          distanceKm(
+            [location.lat, location.lon],
+            COLLISION_INTERSECTION.coordinates
+          ) > 2
       );
+      const candidatePairs = [];
+      for (let first = 0; first < starts.length; first += 1) {
+        for (let second = first + 1; second < starts.length; second += 1) {
+          if (
+            distanceKm(
+              [starts[first].lat, starts[first].lon],
+              [starts[second].lat, starts[second].lon]
+            ) > 2
+          ) {
+            candidatePairs.push([starts[first], starts[second]]);
+          }
+        }
+      }
 
-      const collisionFraction = 0.35 + Math.random() * 0.3;
+      candidatePairs.sort(() => Math.random() - 0.5);
+      let selectedRoutes = null;
+      let routePairError = null;
 
-      setRoute({
-        coordinates,
-        start,
-        end,
-        collisionFraction,
-        distance: result.routes[0].distance / 1000,
+      for (const [startA, startB] of candidatePairs.slice(0, 4)) {
+        const [routeA, routeB] = await Promise.all([
+          fetchRoadRoute(startA, ARRIVAL_BEARINGS[0]),
+          fetchRoadRoute(startB, ARRIVAL_BEARINGS[1]),
+        ]);
+        try {
+          selectedRoutes = buildRoutePair(
+            routeA,
+            routeB,
+            COLLISION_INTERSECTION.coordinates
+          );
+          break;
+        } catch (routeError) {
+          routePairError = routeError;
+        }
+      }
+
+      if (!selectedRoutes) {
+        throw routePairError || new Error("Could not find two distinct road approaches.");
+      }
+
+      setRoutes({
+        ...selectedRoutes,
+        intersection: COLLISION_INTERSECTION,
+        totalDistance:
+          selectedRoutes.vehicleA.distance + selectedRoutes.vehicleB.distance,
+        coordinates: [
+          ...selectedRoutes.vehicleA.coordinates,
+          ...selectedRoutes.vehicleB.coordinates,
+        ],
       });
     } catch (err) {
       setError(err.message || "Could not load the Karachi road route.");
@@ -241,44 +278,116 @@ export default function AccidentSimulation() {
   }, [loadRandomRoute]);
 
   function startSimulation() {
-    if (!route || loading) return;
+    if (!routes || loading) return;
 
+    collisionHandledRef.current = false;
     setIncident(null);
     setHospitals([]);
     setHospitalStatus("idle");
+    setIncidentSaveState({ status: "idle", message: "" });
+    setNotificationDelivery(null);
     setProgress(0);
     setStatus("running");
   }
 
-  // Progress timer. Collision is handled separately below.
   useEffect(() => {
-    if (status !== "running" || !route) return undefined;
+    if (status !== "running" || !routes) return undefined;
 
-    const timer = window.setInterval(() => {
-      setProgress((current) => Math.min(1, current + 0.002));
-    }, 50);
+    const startedAt = performance.now();
+    let frameId;
+    const animate = (now) => {
+      const nextProgress = Math.min(
+        1,
+        (now - startedAt) / SIMULATION_DURATION_MS
+      );
+      setProgress(nextProgress);
+      if (nextProgress < 1) {
+        frameId = window.requestAnimationFrame(animate);
+      }
+    };
+    frameId = window.requestAnimationFrame(animate);
 
-    return () => window.clearInterval(timer);
-  }, [status, route]);
+    return () => window.cancelAnimationFrame(frameId);
+  }, [status, routes]);
 
   useEffect(() => {
-    if (status !== "running" || progress < 1 || !route) return;
+    if (
+      status !== "running" ||
+      progress < 1 ||
+      !routes ||
+      collisionHandledRef.current
+    ) {
+      return;
+    }
 
-    const [lat, lon] = pointAtFraction(
-      route.coordinates,
-      route.collisionFraction
-    );
+    collisionHandledRef.current = true;
+    const [lat, lon] = routes.collisionPoint;
 
     setIncident({
+      eventId: `simulation-${crypto.randomUUID()}`,
       latitude: Number(lat.toFixed(6)),
       longitude: Number(lon.toFixed(6)),
       timestamp: new Date().toISOString(),
       mapsUrl: `https://www.google.com/maps?q=${lat},${lon}`,
       type: "SIMULATED COLLISION",
     });
-
     setStatus("collision");
-  }, [progress, status, route]);
+  }, [progress, status, routes]);
+
+  const saveIncident = useCallback(
+    async (currentIncident) => {
+      if (savePendingRef.current.has(currentIncident.eventId)) return;
+      savePendingRef.current.add(currentIncident.eventId);
+      setIncidentSaveState({ status: "saving", message: "Saving to C++ incident history..." });
+
+      try {
+        const result = await postJson(`${backendUrl}/api/accident`, {
+          eventId: currentIncident.eventId,
+          timestamp: currentIncident.timestamp,
+          speedA: SIMULATION_SPEED_KMH,
+          speedB: SIMULATION_SPEED_KMH,
+          massA: 1500,
+          massB: 1500,
+          collisionType: "head-on",
+          impactG: 1.0,
+          latitude: currentIncident.latitude,
+          longitude: currentIncident.longitude,
+          vehicleAId: "SIM-CAR-A",
+          vehicleBId: "SIM-CAR-B",
+          evidence: [
+            {
+              type: "simulation_two_routes",
+              label: "Two independent road routes met at the simulated intersection.",
+            },
+            {
+              type: "simulated_gps",
+              label: "Coordinates are map-derived and are not vehicle GPS data.",
+            },
+          ],
+        });
+
+        setIncidentSaveState({
+          status: "saved",
+          message: result.duplicate
+            ? `Incident #${result.id} was already saved.`
+            : `Saved to C++ history as incident #${result.id}.`,
+        });
+        await onIncidentSaved?.();
+      } catch (saveError) {
+        setIncidentSaveState({
+          status: "error",
+          message: saveError.message || "Could not save this simulation to incident history.",
+        });
+      } finally {
+        savePendingRef.current.delete(currentIncident.eventId);
+      }
+    },
+    [backendUrl, onIncidentSaved]
+  );
+
+  useEffect(() => {
+    if (incident) void saveIncident(incident);
+  }, [incident, saveIncident]);
 
   useEffect(() => {
     if (!incident) return undefined;
@@ -323,7 +432,16 @@ export default function AccidentSimulation() {
             const lat = item.lat ?? item.center?.lat;
             const lon = item.lon ?? item.center?.lon;
 
-            if (lat == null || lon == null) return null;
+            if (
+              !Number.isFinite(lat) ||
+              !Number.isFinite(lon) ||
+              lat < -90 ||
+              lat > 90 ||
+              lon < -180 ||
+              lon > 180
+            ) {
+              return null;
+            }
 
             return {
               id: item.id,
@@ -355,26 +473,96 @@ export default function AccidentSimulation() {
     };
   }, [incident]);
 
-  const car1Fraction = route ? progress * route.collisionFraction : 0;
+  const notifyIncident = useCallback(
+    async (currentIncident) => {
+      const eventId = currentIncident.eventId;
+      if (
+        notificationPendingRef.current.has(eventId) ||
+        notificationSentRef.current.has(eventId)
+      ) {
+        return;
+      }
 
-  const car2Fraction = route
-    ? 1 - progress * (1 - route.collisionFraction)
-    : 1;
+      notificationPendingRef.current.add(eventId);
+      setNotificationDelivery({
+        status: "sending",
+        message: "Sending DEMO alert to configured demo contacts...",
+      });
 
-  const car1Position = route
-    ? pointAtFraction(route.coordinates, car1Fraction)
+      try {
+        const result = await postJson(
+          `${notificationUrl}/api/simulation-accident`,
+          {
+            incidentId: eventId,
+            latitude: currentIncident.latitude,
+            longitude: currentIncident.longitude,
+            timestamp: currentIncident.timestamp,
+            hospital: hospitals[0] || null,
+          }
+        );
+        notificationSentRef.current.add(eventId);
+        setNotificationDelivery({
+          status: "sent",
+          message:
+            result.message ||
+            "The notification service accepted the DEMO alert request.",
+        });
+      } catch (notificationError) {
+        setNotificationDelivery({
+          status: "error",
+          message:
+            notificationError.message ||
+            "The DEMO notification could not be sent.",
+        });
+      } finally {
+        notificationPendingRef.current.delete(eventId);
+      }
+    },
+    [hospitals, notificationUrl]
+  );
+
+  useEffect(() => {
+    if (
+      !incident ||
+      !sendDemoAlerts ||
+      incidentSaveState.status !== "saved" ||
+      hospitalStatus === "idle" ||
+      hospitalStatus === "loading" ||
+      notificationAttemptsRef.current.has(incident.eventId)
+    ) {
+      return;
+    }
+
+    notificationAttemptsRef.current.add(incident.eventId);
+    void notifyIncident(incident);
+  }, [
+    hospitalStatus,
+    incident,
+    incidentSaveState.status,
+    notifyIncident,
+    sendDemoAlerts,
+  ]);
+
+  function retryNotification() {
+    if (!incident) return;
+    notificationAttemptsRef.current.delete(incident.eventId);
+    void notifyIncident(incident);
+  }
+
+  const car1Position = routes
+    ? pointAtFraction(routes.vehicleA.coordinates, progress)
     : KARACHI_CENTER;
 
-  const car2Position = route
-    ? pointAtFraction(route.coordinates, car2Fraction)
+  const car2Position = routes
+    ? pointAtFraction(routes.vehicleB.coordinates, progress)
     : KARACHI_CENTER;
 
-  const car1Heading = route
-    ? bearingAtFraction(route.coordinates, car1Fraction)
+  const car1Heading = routes
+    ? bearingAtFraction(routes.vehicleA.coordinates, progress)
     : 0;
 
-  const car2Heading = route
-    ? (bearingAtFraction(route.coordinates, car2Fraction) + 180) % 360
+  const car2Heading = routes
+    ? bearingAtFraction(routes.vehicleB.coordinates, progress)
     : 180;
 
   const cardStyle = {
@@ -417,6 +605,18 @@ export default function AccidentSimulation() {
         }
       `}</style>
 
+      <div
+        role="note"
+        style={{
+          ...cardStyle,
+          borderColor: "#f59e0b",
+          color: "#fde68a",
+        }}
+      >
+        DEMO ONLY — map-derived coordinates are not live vehicle GPS. No
+        emergency services or hospitals are contacted.
+      </div>
+
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
         <div style={{ ...cardStyle, flex: 1, minWidth: 180 }}>
           <div style={{ color: "#94a3b8", fontSize: 12 }}>
@@ -438,7 +638,7 @@ export default function AccidentSimulation() {
           </div>
 
           <strong style={{ fontSize: 19 }}>
-            {route ? `${route.distance.toFixed(2)} km` : "--"}
+            {routes ? `${routes.totalDistance.toFixed(2)} km total` : "--"}
           </strong>
         </div>
 
@@ -464,11 +664,12 @@ export default function AccidentSimulation() {
         >
           <div>
             <h2 style={{ margin: 0, fontSize: 20 }}>
-              Karachi Accident Simulation
+              {COLLISION_INTERSECTION.name} Accident Simulation
             </h2>
 
             <p style={{ color: "#94a3b8", margin: "5px 0 0" }}>
-              Real roads · Sedan vs SUV · Automatic collision
+              Two independent road approaches · Sedan vs SUV · Automatic
+              collision
             </p>
           </div>
 
@@ -479,9 +680,9 @@ export default function AccidentSimulation() {
                 background: "#2563eb",
                 color: "white",
                 opacity:
-                  !route || loading || status === "running" ? 0.55 : 1,
+                  !routes || loading || status === "running" ? 0.55 : 1,
               }}
-              disabled={!route || loading || status === "running"}
+              disabled={!routes || loading || status === "running"}
               onClick={startSimulation}
             >
               Start Simulation
@@ -502,6 +703,26 @@ export default function AccidentSimulation() {
           </div>
         </div>
 
+        <label
+          style={{
+            display: "flex",
+            alignItems: "flex-start",
+            gap: 9,
+            marginBottom: 14,
+            color: "#fde68a",
+            fontSize: 13,
+          }}
+        >
+          <input
+            type="checkbox"
+            checked={sendDemoAlerts}
+            onChange={(event) => setSendDemoAlerts(event.target.checked)}
+            disabled={status === "running"}
+          />
+          After the incident is saved, send a DEMO SMS to the two configured
+          demo contacts.
+        </label>
+
         <div
           style={{
             height: 510,
@@ -521,29 +742,56 @@ export default function AccidentSimulation() {
               url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
             />
 
-            {route && (
+            {routes && (
               <>
-                <FitRoute coordinates={route.coordinates} />
+                <FitRoute coordinates={routes.coordinates} />
 
                 <Polyline
-                  positions={route.coordinates}
+                  positions={routes.vehicleA.coordinates}
                   pathOptions={{
                     color: "#2563eb",
                     weight: 6,
                     opacity: 0.8,
                   }}
                 />
-
-                <CircleMarker
-                  center={route.coordinates[0]}
-                  radius={7}
-                  pathOptions={{ color: "#16a34a", fillOpacity: 1 }}
+                <Polyline
+                  positions={routes.vehicleB.coordinates}
+                  pathOptions={{
+                    color: "#ea580c",
+                    weight: 6,
+                    opacity: 0.8,
+                  }}
                 />
 
                 <CircleMarker
-                  center={route.coordinates[route.coordinates.length - 1]}
+                  center={routes.vehicleA.coordinates[0]}
                   radius={7}
-                  pathOptions={{ color: "#ea580c", fillOpacity: 1 }}
+                  pathOptions={{
+                    color: "#16a34a",
+                    fillColor: "#16a34a",
+                    fillOpacity: 1,
+                  }}
+                />
+
+                <CircleMarker
+                  center={routes.vehicleB.coordinates[0]}
+                  radius={7}
+                  pathOptions={{
+                    color: "#7c3aed",
+                    fillColor: "#7c3aed",
+                    fillOpacity: 1,
+                  }}
+                />
+
+                <CircleMarker
+                  center={routes.collisionPoint}
+                  radius={8}
+                  pathOptions={{
+                    color: "#dc2626",
+                    fillColor: "#f87171",
+                    fillOpacity: 0.9,
+                    weight: 3,
+                  }}
                 />
 
                 {(status === "running" || status === "collision") && (
@@ -583,8 +831,9 @@ export default function AccidentSimulation() {
         </div>
 
         <p style={{ color: "#94a3b8", fontSize: 12, marginBottom: 0 }}>
-          Blue line = selected road · Blue sedan and orange SUV = opposing
-          vehicles · Red marker = simulated collision · Red crosses = hospitals
+          Blue and orange lines = separate routes to the shared collision point
+          · Green and purple dots = vehicle starts · Red marker = simulated
+          collision · Red crosses = hospitals
         </p>
       </div>
 
@@ -597,8 +846,12 @@ export default function AccidentSimulation() {
       {incident && (
         <div style={{ ...cardStyle, borderColor: "#dc2626" }}>
           <h2 style={{ color: "#f87171", marginTop: 0 }}>
-            Accident Location Captured
+            Simulated Collision Location Captured
           </h2>
+
+          <p>
+            <strong>Incident ID:</strong> {incident.eventId}
+          </p>
 
           <p>
             <strong>Latitude:</strong> {incident.latitude}
@@ -620,6 +873,40 @@ export default function AccidentSimulation() {
           >
             Open accident location in Google Maps
           </a>
+
+          <p role="status" style={{ marginBottom: 8 }}>
+            <strong>C++ history:</strong> {incidentSaveState.message || "Saving..."}
+            {incidentSaveState.status === "error" && (
+              <>
+                {" "}
+                <button
+                  type="button"
+                  style={{ ...buttonStyle, padding: "6px 10px" }}
+                  onClick={() => void saveIncident(incident)}
+                >
+                  Retry save
+                </button>
+              </>
+            )}
+          </p>
+
+          {notificationDelivery && (
+            <p role="status" style={{ marginBottom: 8 }}>
+              <strong>DEMO notification:</strong> {notificationDelivery.message}
+              {notificationDelivery.status === "error" && (
+                <>
+                  {" "}
+                  <button
+                    type="button"
+                    style={{ ...buttonStyle, padding: "6px 10px" }}
+                    onClick={retryNotification}
+                  >
+                    Retry notification
+                  </button>
+                </>
+              )}
+            </p>
+          )}
 
           <h3>Nearby Hospitals (within 6 km)</h3>
 
@@ -665,8 +952,8 @@ export default function AccidentSimulation() {
           ))}
 
           <p style={{ color: "#fbbf24", fontSize: 13 }}>
-            DEMO ONLY: This is a simulated collision. No SMS has been sent
-            and no real emergency service has been contacted.
+            DEMO ONLY: These coordinates are from the map simulation, not
+            vehicle GPS. No emergency service or hospital is contacted.
           </p>
         </div>
       )}

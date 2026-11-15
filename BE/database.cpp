@@ -191,6 +191,88 @@ bool PostgresDatabase::insertAccident(int impactScore,
 #endif
 }
 
+bool PostgresDatabase::insertSimulationAccident(
+    const std::string &eventId, const std::string &timestamp,
+    int impactScore, const std::string &severity,
+    const std::string &collisionType, const std::string &eventType,
+    const std::string &vehicleIdsJson, const std::string &evidenceJson,
+    bool hasLocation, double latitude, double longitude, std::uint64_t &id,
+    bool &inserted, std::string &error)
+{
+#ifdef SAD_WITH_POSTGRESQL
+    const std::string scoreText = std::to_string(impactScore);
+    const std::string latitudeText = std::to_string(latitude);
+    const std::string longitudeText = std::to_string(longitude);
+    const char *values[] = {
+        scoreText.c_str(), severity.c_str(), collisionType.c_str(),
+        eventType.c_str(), eventId.c_str(), timestamp.c_str(),
+        vehicleIdsJson.c_str(), evidenceJson.c_str(),
+        hasLocation ? latitudeText.c_str() : nullptr,
+        hasLocation ? longitudeText.c_str() : nullptr};
+    PGconn *connection = static_cast<PGconn *>(connection_);
+    PGresult *result = PQexecParams(
+        connection,
+        "INSERT INTO accidents "
+        "(impact_score, severity, collision_type, event_type, ai_event_id, "
+        "event_timestamp, confidence_json, vehicle_ids, evidence, latitude, longitude) "
+        "VALUES ($1::integer, $2, $3, $4, $5, $6, 'null'::jsonb, "
+        "$7::jsonb, $8::jsonb, $9::double precision, "
+        "$10::double precision) "
+        "ON CONFLICT (ai_event_id) DO NOTHING RETURNING id",
+        10, nullptr, values, nullptr, nullptr, 0);
+    if (result == nullptr || PQresultStatus(result) != PGRES_TUPLES_OK)
+    {
+        error = result == nullptr ? PQerrorMessage(connection)
+                                 : PQresultErrorMessage(result);
+        if (result != nullptr) PQclear(result);
+        return false;
+    }
+
+    inserted = PQntuples(result) == 1;
+    if (inserted)
+    {
+        id = static_cast<std::uint64_t>(
+            std::strtoull(PQgetvalue(result, 0, 0), nullptr, 10));
+        PQclear(result);
+        return true;
+    }
+    PQclear(result);
+
+    const char *lookupValues[] = {eventId.c_str()};
+    result = PQexecParams(
+        connection, "SELECT id::text FROM accidents WHERE ai_event_id = $1",
+        1, nullptr, lookupValues, nullptr, nullptr, 0);
+    if (result == nullptr || PQresultStatus(result) != PGRES_TUPLES_OK ||
+        PQntuples(result) != 1)
+    {
+        error = result == nullptr ? PQerrorMessage(connection)
+                                 : PQresultErrorMessage(result);
+        if (result != nullptr) PQclear(result);
+        return false;
+    }
+    id = static_cast<std::uint64_t>(
+        std::strtoull(PQgetvalue(result, 0, 0), nullptr, 10));
+    PQclear(result);
+    return true;
+#else
+    (void)eventId;
+    (void)timestamp;
+    (void)impactScore;
+    (void)severity;
+    (void)collisionType;
+    (void)eventType;
+    (void)vehicleIdsJson;
+    (void)evidenceJson;
+    (void)hasLocation;
+    (void)latitude;
+    (void)longitude;
+    (void)id;
+    (void)inserted;
+    error = "PostgreSQL support is not available in this build.";
+    return false;
+#endif
+}
+
 bool PostgresDatabase::insertAiAccident(
     const std::string &eventId, const std::string &timestamp,
     const std::string &eventType, const std::string &severity,

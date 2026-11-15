@@ -6,10 +6,16 @@ const cors = require("cors");
 const twilio = require("twilio");
 const { Resend } = require("resend");
 const rateLimit = require("express-rate-limit");
+const { createIdempotentAction } = require("./simulation-idempotency");
 
 const app = express();
+const sendSimulationOnce = createIdempotentAction();
 
-app.use(cors({ origin: "http://localhost:5173" }));
+app.use(
+  cors({
+    origin: ["http://localhost:5173", "http://127.0.0.1:5173"],
+  })
+);
 app.use(express.json({ limit: "20kb" }));
 
 app.use(
@@ -54,9 +60,12 @@ app.get("/api/health", (req, res) => {
 
 // DEMO ACCIDENT SMS
 app.post("/api/simulation-accident", async (req, res) => {
-  const { latitude, longitude, timestamp, hospital } = req.body || {};
+  const { incidentId, latitude, longitude, timestamp, hospital } =
+    req.body || {};
 
   if (
+    typeof incidentId !== "string" ||
+    !/^[A-Za-z0-9._:-]{1,160}$/.test(incidentId) ||
     typeof latitude !== "number" ||
     typeof longitude !== "number" ||
     !Number.isFinite(latitude) ||
@@ -68,7 +77,7 @@ app.post("/api/simulation-accident", async (req, res) => {
   ) {
     return res.status(400).json({
       success: false,
-      error: "Valid accident latitude and longitude are required.",
+      error: "A valid incident ID and accident latitude and longitude are required.",
     });
   }
 
@@ -101,7 +110,7 @@ app.post("/api/simulation-accident", async (req, res) => {
       : "Hospital information unavailable";
 
   const hospitalDistance =
-    Number.isFinite(hospital?.distance)
+    Number.isFinite(hospital?.distance) && hospital.distance >= 0
       ? `${hospital.distance.toFixed(2)} km`
       : "Unknown";
 
@@ -120,6 +129,7 @@ app.post("/api/simulation-accident", async (req, res) => {
 
   const message = [
     "🚨 SIMULATED ACCIDENT ALERT - DEMO ONLY",
+    `Incident ID: ${incidentId}`,
     "",
     `Latitude: ${latitude}`,
     `Longitude: ${longitude}`,
@@ -135,47 +145,67 @@ app.post("/api/simulation-accident", async (req, res) => {
     "No emergency service has been contacted.",
   ].join("\n");
 
-  const results = await Promise.allSettled(
-    demoNumbers.map((phone) =>
-      smsClient.messages.create({
-        from: process.env.TWILIO_PHONE_NUMBER,
-        to: phone,
-        body: message,
-      })
-    )
-  );
-
-  const notifications = results.map((result, index) => ({
-    contact: index + 1,
-    status: result.status === "fulfilled" ? "sent" : "failed",
-  }));
-
-  results.forEach((result, index) => {
-    if (result.status === "rejected") {
-      console.error(
-        `Demo SMS ${index + 1} failed:`,
-        result.reason?.message || "Unknown provider error"
+  try {
+    const outcome = await sendSimulationOnce(incidentId, async () => {
+      const results = await Promise.allSettled(
+        demoNumbers.map((phone) =>
+          smsClient.messages.create({
+            from: process.env.TWILIO_PHONE_NUMBER,
+            to: phone,
+            body: message,
+          })
+        )
       );
-    }
-  });
 
-  const sentCount = notifications.filter(
-    (item) => item.status === "sent"
-  ).length;
+      const notifications = results.map((result, index) => ({
+        contact: index + 1,
+        status: result.status === "fulfilled" ? "sent" : "failed",
+      }));
 
-  return res.status(sentCount > 0 ? 200 : 502).json({
-    success: sentCount > 0,
-    notifications,
-    sentCount,
-    totalContacts: demoNumbers.length,
-    message:
-      sentCount === 2
-        ? "Both demo SMS notifications were accepted by Twilio."
-        : sentCount === 1
-          ? "One demo SMS was accepted; one failed."
-          : "Both demo SMS notifications failed.",
-    note: "Twilio acceptance does not guarantee delivery. DEMO ONLY.",
-  });
+      results.forEach((result, index) => {
+        if (result.status === "rejected") {
+          console.error(
+            `Demo SMS ${index + 1} failed:`,
+            result.reason?.message || "Unknown provider error"
+          );
+        }
+      });
+
+      const sentCount = notifications.filter(
+        (item) => item.status === "sent"
+      ).length;
+
+      return {
+        statusCode: sentCount > 0 ? 200 : 502,
+        body: {
+          success: sentCount > 0,
+          notifications,
+          sentCount,
+          totalContacts: demoNumbers.length,
+          message:
+            sentCount === 2
+              ? "Both demo SMS notifications were accepted by Twilio."
+              : sentCount === 1
+                ? "One demo SMS was accepted; one failed."
+                : "Both demo SMS notifications failed.",
+          note: "Twilio acceptance does not guarantee delivery. DEMO ONLY.",
+        },
+      };
+    });
+
+    return res
+      .status(outcome.result.statusCode)
+      .json({ ...outcome.result.body, duplicate: outcome.duplicate });
+  } catch (notificationError) {
+    console.error(
+      "Simulation SMS operation failed:",
+      notificationError.message || "Unknown provider error"
+    );
+    return res.status(502).json({
+      success: false,
+      error: "The DEMO SMS operation failed and will not be retried automatically.",
+    });
+  }
 });
 
 // Existing manual report endpoint

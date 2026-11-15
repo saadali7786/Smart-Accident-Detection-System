@@ -1168,6 +1168,59 @@ if (headers.find("GET /api/vehicles ") == 0)
                            R"({"error":"Invalid collision type"})");
     }
 
+    string eventId;
+    const JsonValue *eventIdValue = jsonMember(requestJson, "eventId");
+    if (eventIdValue != nullptr)
+    {
+        if (eventIdValue->type != JsonValue::Type::String ||
+            eventIdValue->string.empty() || eventIdValue->string.size() > 160)
+        {
+            return getResponse(
+                400, R"({"success":false,"error":"eventId must be a non-empty string of at most 160 characters"})");
+        }
+        eventId = eventIdValue->string;
+        for (char character : eventId)
+        {
+            if (!isalnum(static_cast<unsigned char>(character)) &&
+                character != '-' && character != '_' &&
+                character != '.' && character != ':')
+            {
+                return getResponse(
+                    400, R"({"success":false,"error":"eventId contains unsupported characters"})");
+            }
+        }
+    }
+
+    string suppliedTimestamp;
+    const JsonValue *timestampValue = jsonMember(requestJson, "timestamp");
+    if (timestampValue != nullptr)
+    {
+        if (timestampValue->type != JsonValue::Type::String ||
+            timestampValue->string.empty() || timestampValue->string.size() > 80)
+        {
+            return getResponse(
+                400, R"({"success":false,"error":"timestamp must be a non-empty string of at most 80 characters"})");
+        }
+        suppliedTimestamp = timestampValue->string;
+        for (unsigned char character : suppliedTimestamp)
+        {
+            if (character < 0x20)
+            {
+                return getResponse(
+                    400, R"({"success":false,"error":"timestamp contains unsupported characters"})");
+            }
+        }
+    }
+
+    const JsonValue *evidenceValue = jsonMember(requestJson, "evidence");
+    if (evidenceValue != nullptr &&
+        (evidenceValue->type != JsonValue::Type::Array ||
+         evidenceValue->array.size() > 64))
+    {
+        return getResponse(
+            400, R"({"success":false,"error":"evidence must be an array of at most 64 items"})");
+    }
+
     // Read optional GPS coordinates.
     const bool latitudeProvided =
         jsonMember(requestJson, "latitude") != nullptr;
@@ -1206,6 +1259,18 @@ if (headers.find("GET /api/vehicles ") == 0)
                            R"({"error":"Speeds must be 0-300 and impactG must be 0-10"})");
     }
 
+    if (!eventId.empty())
+    {
+        const auto existingEvent = seenAIEventIds.find(eventId);
+        if (existingEvent != seenAIEventIds.end())
+        {
+            return getResponse(
+                200, "{\"success\":true,\"duplicate\":true,\"eventId\":" +
+                         jsonEscape(eventId) + ",\"id\":" +
+                         to_string(existingEvent->second) + "}");
+        }
+    }
+
     // Convert vehicle speeds from km/h to m/s.
     double velocityA = speedA / 3.6;
     double velocityB = speedB / 3.6;
@@ -1236,42 +1301,6 @@ if (headers.find("GET /api/vehicles ") == 0)
     // Decision Tree classification
     string severity = decisionTree(score);
 
-    // Add the accident to the pending FIFO Queue.
-    // Create a new accident record.
-    AccidentEvent newEvent;
-
-    std::string databaseError;
-    if (database.isEnabled())
-    {
-        std::uint64_t storedId = 0;
-        if (!database.insertAccident(score, severity, collisionType, hasLocation,
-                                     latitude, longitude, storedId,
-                                     databaseError))
-        {
-            cerr << "PostgreSQL accident insert failed: "
-                 << databaseError << '\n';
-            return getResponse(
-                503, R"({"success":false,"error":"Accident could not be saved"})");
-        }
-        newEvent.id = storedId;
-        nextAccidentId = std::max(nextAccidentId, storedId + 1);
-    }
-    else
-    {
-        newEvent.id = nextAccidentId++;
-    }
-    newEvent.impactScore = score;
-    newEvent.severity = severity;
-    newEvent.timestamp = getCurrentTimestamp();
-
-    newEvent.latitude = latitude;
-    newEvent.longitude = longitude;
-    newEvent.hasLocation = hasLocation;
-
-    newEvent.processed = false;
-    newEvent.eventType = collisionType;
-    newEvent.confidenceJson = "null";
-    newEvent.evidenceJson = "[]";
     JsonValue vehicleIds;
     vehicleIds.type = JsonValue::Type::Array;
     for (const char *vehicleField : {"vehicleAId", "vehicleBId"})
@@ -1284,7 +1313,73 @@ if (headers.find("GET /api/vehicles ") == 0)
             vehicleIds.array.push_back(*vehicleId);
         }
     }
-    newEvent.vehicleIdsJson = serializeJson(vehicleIds);
+    const string vehicleIdsJson = serializeJson(vehicleIds);
+    const string evidenceJson =
+        evidenceValue == nullptr ? "[]" : serializeJson(*evidenceValue);
+    const string eventType =
+        eventId.empty() ? collisionType : "simulation_collision";
+    const string eventTimestamp =
+        suppliedTimestamp.empty() ? getCurrentTimestamp() : suppliedTimestamp;
+
+    // Add the accident to the pending FIFO Queue.
+    // Create a new accident record.
+    AccidentEvent newEvent;
+
+    std::string databaseError;
+    if (database.isEnabled())
+    {
+        std::uint64_t storedId = 0;
+        bool inserted = true;
+        const bool saved =
+            eventId.empty()
+                ? database.insertAccident(
+                      score, severity, collisionType, hasLocation, latitude,
+                      longitude, storedId, databaseError)
+                : database.insertSimulationAccident(
+                      eventId, eventTimestamp, score, severity, collisionType,
+                      eventType, vehicleIdsJson, evidenceJson, hasLocation,
+                      latitude, longitude, storedId, inserted, databaseError);
+        if (!saved)
+        {
+            cerr << "PostgreSQL accident insert failed: "
+                 << databaseError << '\n';
+            return getResponse(
+                503, R"({"success":false,"error":"Accident could not be saved"})");
+        }
+        newEvent.id = storedId;
+        nextAccidentId = std::max(nextAccidentId, storedId + 1);
+        if (!inserted)
+        {
+            seenAIEventIds[eventId] = storedId;
+            return getResponse(
+                200, "{\"success\":true,\"duplicate\":true,\"eventId\":" +
+                         jsonEscape(eventId) + ",\"id\":" +
+                         to_string(storedId) + "}");
+        }
+    }
+    else
+    {
+        newEvent.id = nextAccidentId++;
+    }
+    newEvent.impactScore = score;
+    newEvent.severity = severity;
+    newEvent.timestamp = eventTimestamp;
+
+    newEvent.latitude = latitude;
+    newEvent.longitude = longitude;
+    newEvent.hasLocation = hasLocation;
+
+    newEvent.processed = false;
+    newEvent.sourceEventId = eventId;
+    newEvent.eventType = eventType;
+    newEvent.confidenceJson = "null";
+    newEvent.evidenceJson = evidenceJson;
+    newEvent.vehicleIdsJson = vehicleIdsJson;
+
+    if (!eventId.empty())
+    {
+        seenAIEventIds[eventId] = newEvent.id;
+    }
 
     // Add to pending FIFO Queue.
     accidentQueue.push(newEvent);
@@ -1311,6 +1406,11 @@ if (headers.find("GET /api/vehicles ") == 0)
     bool alert = (severity == "Severe");
     string result =
         "{\"success\":true,"
+        "\"id\":" +
+        to_string(newEvent.id) + ","
+        "\"eventId\":" +
+        jsonEscape(eventId) + ","
+        "\"duplicate\":false,"
         "\"impactScore\":" +
         to_string(score) + ","
                            "\"severity\":\"" +
