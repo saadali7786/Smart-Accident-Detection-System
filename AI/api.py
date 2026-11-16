@@ -53,6 +53,8 @@ BASE_DIR = Path(__file__).resolve().parent
 UPLOAD_DIR = BASE_DIR / "videos"
 OUTPUT_DIR = BASE_DIR / "output"
 MODEL_PATH = BASE_DIR / "models" / "yolo11n.pt"
+if not MODEL_PATH.is_file():
+    MODEL_PATH = BASE_DIR.parent / "yolo11n.pt"
 
 UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
@@ -163,7 +165,18 @@ BACKEND_FORWARDER = BackendEventForwarder(
 # YOLO MODEL
 # ============================================================
 
+if not MODEL_PATH.is_file():
+    raise FileNotFoundError(
+        "YOLO11n model not found. Place yolo11n.pt in AI/models or the repository root."
+    )
+
 model = YOLO(str(MODEL_PATH))
+model.predict(
+    np.zeros((320, 320, 3), dtype=np.uint8),
+    imgsz=320,
+    device="cpu",
+    verbose=False,
+)
 
 
 def reset_yolo_trackers():

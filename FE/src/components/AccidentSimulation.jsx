@@ -351,8 +351,8 @@ function LocationSearch({ label, place, onSelect, disabled = false }) {
 
 const carIcon = (rotation = 0, vehicleType = "sedan", vehicleColor = "#f4f7fa") => {
   const isSuv = vehicleType === "suv";
-  const width = isSuv ? 20 : 18;
-  const height = isSuv ? 34 : 32;
+  const width = isSuv ? 16 : 14;
+  const height = isSuv ? 26 : 24;
   const html = `
     <div class="topdown-car" style="--car-color:${vehicleColor};transform:rotate(${rotation}deg)">
       <svg viewBox="0 0 20 34" width="${width}" height="${height}" aria-hidden="true">
@@ -598,7 +598,6 @@ function MultiVehicleTraffic({
   sendDemoAlerts,
   setSendDemoAlerts,
   onCollisionDetected,
-  onRunningChange,
   incident,
   classification,
   incidentSaveState,
@@ -638,7 +637,6 @@ function MultiVehicleTraffic({
     setIntersection(null);
     setRunStatus("idle");
     setElapsedMs(0);
-    onRunningChange(false);
 
     try {
       const primaryRoutes = await fetchNavigationRoutes(
@@ -738,7 +736,7 @@ function MultiVehicleTraffic({
     } finally {
       if (requestId === routeRequestIdRef.current) setRouteLoading(false);
     }
-  }, [destinationPlace, onRunningChange, startPlace]);
+  }, [destinationPlace, startPlace]);
 
   useEffect(() => {
     void loadTrafficRoutes();
@@ -823,14 +821,18 @@ function MultiVehicleTraffic({
           .join(":");
         if (reportedPairsRef.current.has(pairKey)) return;
         reportedPairsRef.current.add(pairKey);
-        crashedPositionsRef.current.set(
-          collision.vehicleAId,
-          collision.location
-        );
-        crashedPositionsRef.current.set(
-          collision.vehicleBId,
-          collision.location
-        );
+        if (!crashedPositionsRef.current.has(collision.vehicleAId)) {
+          crashedPositionsRef.current.set(
+            collision.vehicleAId,
+            collision.location
+          );
+        }
+        if (!crashedPositionsRef.current.has(collision.vehicleBId)) {
+          crashedPositionsRef.current.set(
+            collision.vehicleBId,
+            collision.location
+          );
+        }
         setCrashedVehicles((current) => {
           const updated = new Set(current);
           updated.add(collision.vehicleAId);
@@ -959,7 +961,6 @@ function MultiVehicleTraffic({
         previousElapsedRef.current = nextElapsed;
         setElapsedMs(nextElapsed);
         setRunStatus("completed");
-        onRunningChange(false);
         return;
       }
       setElapsedMs(nextElapsed);
@@ -968,7 +969,6 @@ function MultiVehicleTraffic({
     frameId = window.requestAnimationFrame(animate);
     return () => window.cancelAnimationFrame(frameId);
   }, [
-    onRunningChange,
     findCollisionsAcrossElapsed,
     registerCollisions,
     runStatus,
@@ -983,21 +983,18 @@ function MultiVehicleTraffic({
     setCollisionEvents([]);
     setCrashedVehicles(new Set());
     setElapsedMs(0);
-    setTrafficPlaybackDuration(35000 / playbackSpeed);
+    setTrafficPlaybackDuration(30000 / playbackSpeed);
     runStartRef.current = performance.now();
     setRunStatus("running");
-    onRunningChange(true);
   };
 
   const pauseTraffic = () => {
     setRunStatus("paused");
-    onRunningChange(false);
   };
 
   const resumeTraffic = () => {
     runStartRef.current = performance.now() - elapsedMs;
     setRunStatus("running");
-    onRunningChange(true);
   };
 
   const resetTraffic = () => {
@@ -1008,7 +1005,6 @@ function MultiVehicleTraffic({
     crashedPositionsRef.current.clear();
     reportedPairsRef.current.clear();
     previousElapsedRef.current = null;
-    onRunningChange(false);
   };
 
   const mapBounds = useMemo(
@@ -1332,6 +1328,24 @@ function MultiVehicleTraffic({
               )}
             </p>
           )}
+          {collisionEvents.length > 0 && (
+            <details className="traffic-response-details">
+              <summary>Collision details · {collisionEvents.length}</summary>
+              {collisionEvents.map((event) => (
+                <p key={event.eventId}>
+                  <strong>
+                    {event.vehicleAId} + {event.vehicleBId}
+                  </strong>
+                  {" · Impact "}
+                  {event.impactScore ?? "pending"}
+                  {" · "}
+                  {event.severity || "classification pending"}
+                  {" · "}
+                  {event.processingStatus}
+                </p>
+              ))}
+            </details>
+          )}
           <details className="traffic-response-details">
             <summary>
               Nearby hospitals ·{" "}
@@ -1389,8 +1403,7 @@ export default function AccidentSimulation({
   notificationUrl = DEFAULT_NOTIFICATION_URL,
   onIncidentSaved,
 }) {
-  const [mode, setMode] = useState("traffic");
-  const [trafficRunning, setTrafficRunning] = useState(false);
+  const mode = "traffic";
   const [startPlace, setStartPlace] = useState(DEFAULT_NAV_START);
   const [destinationPlace, setDestinationPlace] = useState(
     DEFAULT_NAV_DESTINATION
@@ -2188,39 +2201,6 @@ export default function AccidentSimulation({
         }
       `}</style>
 
-      <div
-        role="tablist"
-        aria-label="Map experience"
-        style={{ display: "flex", flexWrap: "wrap", gap: 8 }}
-      >
-        {[
-          ["traffic", "Multi-Vehicle Traffic"],
-          ["simulation", "Accident Simulation"],
-          ["navigation", "Road Navigation"],
-        ].map(([value, label]) => (
-          <button
-            key={value}
-            type="button"
-            role="tab"
-            aria-selected={mode === value}
-            disabled={
-              navigationStatus === "running" ||
-              status === "running" ||
-              trafficRunning
-            }
-            onClick={() => setMode(value)}
-            style={{
-              ...buttonStyle,
-              color: mode === value ? "#fff" : "#c5d1df",
-              background: mode === value ? "#1d4ed8" : "#172334",
-              border: "1px solid #33475e",
-            }}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-
       {mode === "traffic" ? (
         <MultiVehicleTraffic
           startPlace={startPlace}
@@ -2231,7 +2211,6 @@ export default function AccidentSimulation({
           sendDemoAlerts={sendDemoAlerts}
           setSendDemoAlerts={setSendDemoAlerts}
           onCollisionDetected={handleTrafficCollision}
-          onRunningChange={setTrafficRunning}
           incident={incident}
           classification={classification}
           incidentSaveState={incidentSaveState}

@@ -148,6 +148,16 @@ class CppBackendApiTests(unittest.TestCase):
         self.assertEqual(status["priorityEvents"], [])
         self.assertEqual(status["historyEvents"], [])
 
+    def test_health_reports_actual_backend_and_persistence_status(self):
+        code, health = self.request("GET", "/api/health")
+        self.assertEqual(code, 200)
+        self.assertEqual(health["service"], "cpp-backend")
+        self.assertEqual(health["status"], "online")
+        self.assertIn(health["persistence"], {"postgresql", "memory-only"})
+        self.assertEqual(
+            health["persistent"], health["persistence"] == "postgresql"
+        )
+
     def test_fifo_processes_oldest_and_keeps_history_consistent(self):
         first_status, first = self.request(
             "POST", "/api/ai/event", self.ai_event()

@@ -2237,7 +2237,8 @@ th.sortable:hover {
 
 .traffic-map-frame {
   position: relative;
-  height: clamp(450px, 72vh, 790px);
+  height: min(64vh, 600px);
+  min-height: 400px;
   min-width: 0;
   overflow: hidden;
   background: #e8e9e5;
@@ -2256,8 +2257,8 @@ th.sortable:hover {
 
 .topdown-car {
   display: grid;
-  width: 20px;
-  height: 34px;
+  width: 16px;
+  height: 26px;
   place-items: center;
   transform-origin: center;
   filter: drop-shadow(0 1px 2px #17202a99);
@@ -2523,7 +2524,8 @@ th.sortable:hover {
   }
 
   .traffic-map-frame {
-    height: clamp(430px, 68vh, 650px);
+    height: min(60vh, 560px);
+    min-height: 380px;
   }
 
   .traffic-map-controls {
@@ -2562,8 +2564,8 @@ th.sortable:hover {
   }
 
   .traffic-map-frame {
-    height: 64vh;
-    min-height: 390px;
+    height: min(56vh, 480px);
+    min-height: 340px;
   }
 
   .traffic-map-controls {

@@ -13,6 +13,9 @@ class FakeYOLO:
         self.predictor = None
         self.track_calls = 0
 
+    def predict(self, frame, **kwargs):
+        return []
+
     def track(self, frame, **kwargs):
         self.track_calls += 1
         return [SimpleNamespace(boxes=None)]
@@ -79,6 +82,18 @@ class TestLiveAPITests(unittest.TestCase):
 
         ai_api.model = FakeYOLO()
         ai_api.BACKEND_FORWARDER = FakeBackendForwarder()
+
+    def test_model_path_resolves_to_existing_repository_model(self):
+        self.assertTrue(ai_api.MODEL_PATH.is_file())
+        self.assertEqual(ai_api.MODEL_PATH.name, "yolo11n.pt")
+
+    def test_health_reports_model_and_service_status(self):
+        response = self.client.get("/api/ai/status")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["service"], "Python AI")
+        self.assertEqual(response.json()["status"], "Online")
+        self.assertEqual(response.json()["model"], "YOLO11n")
 
     def start_session(self):
         response = self.client.post("/api/ai/live/start")

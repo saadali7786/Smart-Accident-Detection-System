@@ -12,9 +12,6 @@
 #include <stack>
 #include <queue>
 #include <unordered_map>
-#include <mutex>
-#include <thread>
-
 #include <ctime>
 #include <cmath>
 #include <string>
@@ -25,9 +22,9 @@
 #include <atomic>
 #include <limits>
 #include <iterator>
-#include <system_error>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <windows.h>
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -105,8 +102,28 @@ std::uint64_t nextAccidentId = 1;
 unsigned long processedAccidentEvents = 0;
 unsigned long totalEnqueuedEvents = 0;
 unordered_map<string, std::uint64_t> seenAIEventIds;
-mutex requestMutex;
+CRITICAL_SECTION requestCriticalSection;
 double aiForwardConfidenceThreshold = 0.8;
+
+class RequestLock
+{
+public:
+    explicit RequestLock(CRITICAL_SECTION &section) : section_(section)
+    {
+        EnterCriticalSection(&section_);
+    }
+
+    ~RequestLock()
+    {
+        LeaveCriticalSection(&section_);
+    }
+
+    RequestLock(const RequestLock &) = delete;
+    RequestLock &operator=(const RequestLock &) = delete;
+
+private:
+    CRITICAL_SECTION &section_;
+};
 
 // ================= REGISTERED VEHICLE TRACKING =================
 
@@ -413,7 +430,7 @@ string readJsonString(const JsonValue &body, const string &key)
 
 string processRequest(const string &request)
 {
-    std::lock_guard<std::mutex> requestLock(requestMutex);
+    RequestLock requestLock(requestCriticalSection);
     size_t headerEnd = request.find("\r\n\r\n");
     if (headerEnd == string::npos)
     {
@@ -455,6 +472,17 @@ string processRequest(const string &request)
             return getResponse(
                 400, R"({"success":false,"error":"Malformed JSON request body"})");
         }
+    }
+
+    if (headers.find("GET /api/health ") == 0)
+    {
+        const bool persistent = database.isEnabled();
+        return getResponse(
+            200,
+            "{\"success\":true,\"service\":\"cpp-backend\","
+            "\"status\":\"online\",\"persistence\":" +
+                jsonEscape(persistent ? "postgresql" : "memory-only") +
+                ",\"persistent\":" + (persistent ? "true" : "false") + "}");
     }
 
     // DSA status endpoint
@@ -1578,6 +1606,15 @@ void handleClient(SOCKET client)
     closesocket(client);
 }
 
+DWORD WINAPI handleClientThread(LPVOID context)
+{
+    const SOCKET client =
+        static_cast<SOCKET>(reinterpret_cast<UINT_PTR>(context));
+    handleClient(client);
+    activeClients.fetch_sub(1);
+    return 0;
+}
+
 int main()
 {
     const char *confidenceThreshold =
@@ -1638,6 +1675,14 @@ int main()
         return 1;
     }
 
+    if (!InitializeCriticalSectionAndSpinCount(&requestCriticalSection, 4000))
+    {
+        cerr << "Could not initialize request synchronization.\n";
+        closesocket(serverSocket);
+        WSACleanup();
+        return 1;
+    }
+
     sockaddr_in serverAddress{};
     serverAddress.sin_family = AF_INET;
     serverAddress.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -1651,6 +1696,7 @@ int main()
             configuredPort == 0 || configuredPort > 65535)
         {
             cerr << "SAD_PORT must be an integer between 1 and 65535.\n";
+            DeleteCriticalSection(&requestCriticalSection);
             closesocket(serverSocket);
             WSACleanup();
             return 1;
@@ -1664,6 +1710,7 @@ int main()
     {
         cerr << "Could not bind port " << port
              << ". Is another server using it?\n";
+        DeleteCriticalSection(&requestCriticalSection);
         closesocket(serverSocket);
         WSACleanup();
         return 1;
@@ -1672,6 +1719,7 @@ int main()
     if (listen(serverSocket, SOMAXCONN) == SOCKET_ERROR)
     {
         cerr << "Could not listen on the configured port.\n";
+        DeleteCriticalSection(&requestCriticalSection);
         closesocket(serverSocket);
         WSACleanup();
         return 1;
@@ -1700,21 +1748,23 @@ int main()
             closesocket(client);
             continue;
         }
-        try
+        HANDLE worker = CreateThread(
+            nullptr, 0, handleClientThread,
+            reinterpret_cast<LPVOID>(static_cast<UINT_PTR>(client)),
+            0, nullptr);
+        if (worker == nullptr)
         {
-            std::thread([client]()
-                        {
-                            handleClient(client);
-                            activeClients.fetch_sub(1);
-                        })
-                .detach();
-        }
-        catch (const std::system_error &error)
-        {
+            const DWORD error = GetLastError();
             activeClients.fetch_sub(1);
-            cerr << "Could not start request worker: " << error.what() << '\n';
+            cerr << "Could not start request worker (Windows error "
+                 << error << ").\n";
+            sendSocketResponse(
+                client, getResponse(
+                            503, R"({"success":false,"error":"Could not start request worker"})"));
             closesocket(client);
+            continue;
         }
+        CloseHandle(worker);
     }
 
     closesocket(serverSocket);

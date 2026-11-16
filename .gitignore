@@ -1,19 +1,27 @@
-@'
+# Frontend dependencies and generated output
+FE/node_modules/
+FE/dist/
 
-# Python AI environment
+# Backend build output
+BE/build/
+BE/notify/node_modules/
+
+# Python virtual environments, caches, and bytecode
 AI/venv/
-AI/**/__pycache__/
+AI/.venv/
+**/__pycache__/
 *.py[cod]
 
-# AI generated files and large models
+# Local environment files and secrets
+.env
+.env.*
+!.env.example
+BE/notify/.env
+
+# AI generated files and local model assets
 AI/models/*.onnx
 AI/models/*.pt
 AI/videos/*
 !AI/videos/.gitkeep
 AI/output/*
 !AI/output/.gitkeep
-'@ | Add-Content .gitignore
-Add-Content .gitignore "`nFE/node_modules/"
-Add-Content .gitignore "BE/notify/node_modules/"
-FE/node_modules/
-BE/notify/node_modules/

@@ -148,14 +148,19 @@ export function OverviewPage({
   historyError,
   dsaStatus,
   dsaLoading,
+  dsaError,
   backendStatus,
+  backendHealth,
   aiStatus,
+  notificationStatus,
+  notificationInfo,
+  notificationError,
   onNavigate,
   onRefresh,
 }) {
   const counts = countSeverities(history);
   const metrics = [
-    { label: "Backend records", value: historyLoading || historyError ? "—" : history.length, tone: "blue" },
+    { label: "Total accident records", value: historyLoading || historyError ? "—" : history.length, tone: "blue" },
     { label: "Severe", value: historyLoading || historyError ? "—" : counts.severe, tone: "red" },
     { label: "Moderate", value: historyLoading || historyError ? "—" : counts.moderate, tone: "amber" },
     { label: "Minor", value: historyLoading || historyError ? "—" : counts.minor, tone: "green" },
@@ -164,8 +169,30 @@ export function OverviewPage({
       value: dsaLoading || backendStatus !== "online" ? "—" : dsaStatus.pendingEvents ?? dsaStatus.queueSize,
       tone: "violet",
     },
+    {
+      label: "Processed events",
+      value: dsaLoading || backendStatus !== "online"
+        ? "—"
+        : dsaStatus.totalProcessedEvents ?? dsaStatus.processedEvents,
+      tone: "blue",
+    },
   ];
   const recent = [...history].slice(-6).reverse();
+  const persistenceStatus =
+    backendStatus !== "online"
+      ? "Unavailable"
+      : backendHealth?.persistent
+        ? "PostgreSQL · persistent"
+        : "Memory only · not persistent";
+  const emergencyResponseStatus =
+    notificationStatus !== "online"
+      ? "Unavailable"
+      : notificationInfo?.smsTestMode
+        ? "Safe test mode · no messages sent"
+        : notificationInfo?.smsConfigured &&
+            notificationInfo?.demoContactsConfigured === 2
+          ? "DEMO recipients configured · Severe only"
+          : "Not configured";
 
   return (
     <div className="page-stack">
@@ -180,7 +207,7 @@ export function OverviewPage({
           <article className={`metric-card ${metric.tone}`} key={metric.label}>
             <span>{metric.label}</span>
             <strong>{metric.value}</strong>
-            <small>{metric.label === "Backend records" ? "C++ history endpoint" : "Current backend snapshot"}</small>
+            <small>{metric.label === "Total accident records" ? "C++ history endpoint" : "Current backend snapshot"}</small>
           </article>
         ))}
       </section>
@@ -218,8 +245,23 @@ export function OverviewPage({
           <div className="health-list">
             <div><span>C++ backend</span><strong className={`state-text ${backendStatus}`}>{backendStatus}</strong></div>
             <div><span>AI analysis service</span><strong className={`state-text ${aiStatus.connection}`}>{aiStatus.connection}</strong></div>
-            <div><span>Queue processing</span><strong>{dsaLoading ? "Checking" : dsaStatus.processingStatus || "Unavailable"}</strong></div>
+            <div><span>Queue processing</span><strong>{dsaLoading ? "Checking" : dsaError ? "Unavailable" : dsaStatus.processingStatus || "Unavailable"}</strong></div>
+            <div><span>Accident persistence</span><strong>{persistenceStatus}</strong></div>
+            <div><span>Emergency response</span><strong>{emergencyResponseStatus}</strong></div>
           </div>
+          {backendStatus === "online" && !backendHealth?.persistent && (
+            <p className="subtle-note" role="status">
+              Accident history is currently memory-only and will not survive a backend restart. Configure PostgreSQL to enable persistence.
+            </p>
+          )}
+          {dsaError && <p className="subtle-note" role="status">Backend status error: {dsaError}</p>}
+          {aiStatus.error && <p className="subtle-note" role="status">AI service error: {aiStatus.error}</p>}
+          {notificationError && <p className="subtle-note" role="status">{notificationError}</p>}
+          {notificationStatus === "online" && notificationInfo?.smsTestMode && (
+            <p className="subtle-note" role="status">
+              Notification test mode is enabled; no SMS is sent. Live demo alerts are Severe-only and use configured demo recipients.
+            </p>
+          )}
           <div className="page-quick-actions">
             <button type="button" className="quiet-button" onClick={() => onNavigate("live")}>Open live monitoring</button>
             <button type="button" className="quiet-button" onClick={() => onNavigate("ai")}>Open AI studio</button>
@@ -1241,6 +1283,7 @@ export function HistoryPage({ history, historyLoading, historyError, onRefresh }
 
 export function SettingsPage({
   backendStatus,
+  backendHealth,
   aiStatus,
   vehicleStatus,
   notificationStatus,
@@ -1267,7 +1310,8 @@ export function SettingsPage({
   }, []);
 
   const rows = [
-    ["C++ backend", backendStatus, `${backendUrl}/api/dsa/status`],
+    ["C++ backend", backendStatus, `${backendUrl}/api/health and ${backendUrl}/api/dsa/status`],
+    ["Accident persistence", backendStatus === "online" ? (backendHealth?.persistent ? "persistent" : "memory only") : "unavailable", backendHealth?.persistent ? "PostgreSQL" : "Records are not durable across backend restarts"],
     ["Python AI service", aiStatus.connection, `${aiUrl}/api/ai/status`],
     ["Camera source", "not configured", "No live camera stream endpoint is configured"],
     ["Browser location permission", "information only", gpsPermission],

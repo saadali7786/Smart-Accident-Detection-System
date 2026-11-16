@@ -92,6 +92,18 @@ const separatedVehicles = findVehicleCollisions(
   [{ id: "car-a", position: [24.9001, 67.1] }, { id: "car-b", position: [25, 67.1] }]
 );
 assert.equal(separatedVehicles.length, 0);
+assert.equal(
+  findVehicleCollisionsAlongInterval(
+    (elapsedMs) => [
+      { id: "safe-a", position: [24.9, 67.1 + (elapsedMs / 1000) * 0.001] },
+      { id: "safe-b", position: [24.91, 67.1] },
+    ],
+    0,
+    1000
+  ),
+  null,
+  "vehicles moving on separated paths produce no collision"
+);
 const positionsAlongCrossingRoads = (elapsedMs) => {
   const firstVehicle =
     elapsedMs <= 500
@@ -123,6 +135,51 @@ const routeSampledCollision = findVehicleCollisionsAlongInterval(
 assert.equal(routeSampledCollision.collisions.length, 1);
 assert.equal(routeSampledCollision.collisions[0].vehicleAId, "route-a");
 assert.equal(routeSampledCollision.collisions[0].vehicleBId, "route-b");
+const multipleVehiclePositions = (elapsedMs) => [
+  {
+    id: "vehicle-a",
+    position: [24.9, 67.1 + (elapsedMs / 1000) * 0.002],
+  },
+  { id: "vehicle-b", position: [24.9, 67.101] },
+  {
+    id: "vehicle-c",
+    position: [24.91, 67.1 + (elapsedMs / 1000) * 0.002],
+  },
+  { id: "vehicle-d", position: [24.91, 67.1016] },
+  {
+    id: "vehicle-e",
+    position: [24.92, 67.1 + (elapsedMs / 1000) * 0.001],
+  },
+];
+const multipleCollisions = findVehicleCollisionsAlongInterval(
+  multipleVehiclePositions,
+  0,
+  1000
+);
+assert.deepEqual(
+  multipleCollisions.collisions
+    .map((collision) =>
+      [collision.vehicleAId, collision.vehicleBId].sort().join(":")
+    )
+    .sort(),
+  ["vehicle-a:vehicle-b", "vehicle-c:vehicle-d"]
+);
+assert.equal(
+  multipleCollisions.currentPositions.find(
+    (vehicle) => vehicle.id === "vehicle-e"
+  ).position[1],
+  67.101,
+  "vehicles outside the collision continue moving through the interval"
+);
+assert.equal(
+  multipleCollisions.collisions.filter(
+    (collision) =>
+      collision.vehicleAId === "vehicle-a" &&
+      collision.vehicleBId === "vehicle-b"
+  ).length,
+  1,
+  "a pair that remains in contact produces one event"
+);
 assert.notDeepEqual(
   pointBeforeEnd(pair.vehicleB.coordinates),
   pair.collisionPoint

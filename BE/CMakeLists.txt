@@ -9,6 +9,10 @@ find_package(PostgreSQL QUIET)
 
 add_executable(accident_backend main.cpp database.cpp)
 
+if(WIN32)
+    target_link_libraries(accident_backend PRIVATE ws2_32)
+endif()
+
 if(PostgreSQL_FOUND)
     target_compile_definitions(accident_backend PRIVATE SAD_WITH_POSTGRESQL)
     target_include_directories(accident_backend PRIVATE ${PostgreSQL_INCLUDE_DIRS})

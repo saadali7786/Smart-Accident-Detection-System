@@ -37,7 +37,7 @@ const NOTIFICATION_URL =
 const NAV_ITEMS = [
   { id: "overview", label: "Overview", icon: LayoutDashboard },
   { id: "live", label: "Live Monitoring", icon: Camera },
-  { id: "simulation", label: "Accident Simulation", icon: CarFront },
+  { id: "simulation", label: "Multi-Vehicle Traffic", icon: CarFront },
   { id: "ai", label: "AI Analysis Studio", icon: BrainCircuit },
   { id: "incidents", label: "Incident Center", icon: MapPinned },
   { id: "dsa", label: "DSA Monitoring", icon: Waypoints },
@@ -56,8 +56,8 @@ const PAGE_META = {
   history: ["History & Reports", "Searchable records returned by the C++ backend."],
   settings: ["Settings", "Service endpoints and available integrations."],
   simulation: [
-    "Accident Detection & Emergency Response",
-    "Multi-vehicle collision simulation, C++ severity classification, and incident response.",
+    "Multi-Vehicle Traffic",
+    "Multi-vehicle traffic with collision detection, C++ severity classification, and incident response.",
   ],
 };
 
@@ -116,6 +116,7 @@ function App() {
   const [dsaLoading, setDsaLoading] = useState(true);
   const [dsaError, setDsaError] = useState("");
   const [backendStatus, setBackendStatus] = useState("checking");
+  const [backendHealth, setBackendHealth] = useState(null);
   const [history, setHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(true);
   const [historyError, setHistoryError] = useState("");
@@ -123,6 +124,8 @@ function App() {
   const [vehicleStatus, setVehicleStatus] = useState("checking");
   const [aiStatus, setAiStatus] = useState({ connection: "checking" });
   const [notificationStatus, setNotificationStatus] = useState("checking");
+  const [notificationInfo, setNotificationInfo] = useState(null);
+  const [notificationError, setNotificationError] = useState("");
   const [processing, setProcessing] = useState(false);
   const [processFeedback, setProcessFeedback] = useState(null);
   const processLock = useRef(false);
@@ -131,7 +134,20 @@ function App() {
     setDsaLoading(true);
     setDsaError("");
     try {
-      const result = await fetchJson(`${BACKEND_URL}/api/dsa/status`);
+      const [health, result] = await Promise.all([
+        fetchJson(`${BACKEND_URL}/api/health`),
+        fetchJson(`${BACKEND_URL}/api/dsa/status`),
+      ]);
+      if (
+        health.service !== "cpp-backend" ||
+        health.status !== "online" ||
+        typeof health.persistent !== "boolean" ||
+        !["postgresql", "memory-only"].includes(health.persistence)
+      ) {
+        throw new Error(
+          "The C++ backend returned an incomplete health response. Rebuild and restart the current backend."
+        );
+      }
       if (
         !Array.isArray(result.queueEvents) ||
         !Array.isArray(result.stackEvents) ||
@@ -142,6 +158,19 @@ function App() {
           "The C++ backend returned an incomplete DSA status response. Run the current backend build."
         );
       }
+      for (const field of [
+        "pendingEvents",
+        "severeAccidentCount",
+        "totalProcessedEvents",
+        "totalReceivedEvents",
+      ]) {
+        if (!Number.isSafeInteger(result[field]) || result[field] < 0) {
+          throw new Error(
+            `The C++ backend returned an invalid DSA counter: ${field}.`
+          );
+        }
+      }
+      setBackendHealth(health);
       setDsaStatus({
         ...EMPTY_DSA_STATUS,
         ...result,
@@ -149,6 +178,7 @@ function App() {
       setBackendStatus("online");
     } catch (error) {
       console.warn("C++ DSA status unavailable:", error.message);
+      setBackendHealth(null);
       setDsaError(error.message || "Could not load C++ backend status.");
       setBackendStatus("offline");
     } finally {
@@ -161,7 +191,12 @@ function App() {
     setHistoryError("");
     try {
       const result = await fetchJson(`${BACKEND_URL}/api/accidents/history`);
-      setHistory(Array.isArray(result.accidents) ? result.accidents : []);
+      if (!Array.isArray(result.accidents)) {
+        throw new Error(
+          "The C++ backend returned an invalid accident history response."
+        );
+      }
+      setHistory(result.accidents);
     } catch (error) {
       console.warn("Accident history unavailable:", error.message);
       setHistoryError(error.message || "Could not load accident history.");
@@ -174,7 +209,10 @@ function App() {
     setVehicleStatus("checking");
     try {
       const result = await fetchJson(`${BACKEND_URL}/api/vehicles`);
-      setVehicles(Array.isArray(result.vehicles) ? result.vehicles : []);
+      if (!Array.isArray(result.vehicles)) {
+        throw new Error("The C++ backend returned an invalid vehicle list.");
+      }
+      setVehicles(result.vehicles);
       setVehicleStatus("online");
     } catch (error) {
       console.warn("Registered vehicle endpoint unavailable:", error.message);
@@ -193,9 +231,23 @@ function App() {
 
   const fetchNotificationStatus = useCallback(async () => {
     try {
-      await fetchJson(`${NOTIFICATION_URL}/api/health`);
+      const result = await fetchJson(`${NOTIFICATION_URL}/api/health`);
+      if (
+        result.service !== "notification-service" ||
+        result.status !== "ok" ||
+        typeof result.smsTestMode !== "boolean" ||
+        typeof result.smsConfigured !== "boolean" ||
+        !Number.isSafeInteger(result.demoContactsConfigured) ||
+        result.demoContactsConfigured < 0
+      ) {
+        throw new Error("The notification service returned an invalid health response.");
+      }
+      setNotificationInfo(result);
+      setNotificationError("");
       setNotificationStatus("online");
-    } catch {
+    } catch (error) {
+      setNotificationInfo(null);
+      setNotificationError(error.message || "Could not check notification service health.");
       setNotificationStatus("offline");
     }
   }, []);
@@ -282,7 +334,11 @@ function App() {
     dsaLoading,
     dsaError,
     backendStatus,
+    backendHealth,
     aiStatus,
+    notificationStatus,
+    notificationInfo,
+    notificationError,
     vehicles,
     vehicleStatus,
     onNavigate: setActivePage,
@@ -369,7 +425,6 @@ function App() {
           {activePage === "settings" && (
             <SettingsPage
               {...sharedPageProps}
-              notificationStatus={notificationStatus}
               backendUrl={BACKEND_URL}
               aiUrl={AI_URL}
               notificationUrl={NOTIFICATION_URL}

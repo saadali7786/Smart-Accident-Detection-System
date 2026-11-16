@@ -309,22 +309,50 @@ export function findVehicleCollisionsAlongInterval(
     (endElapsed - startElapsed) / sampleIntervalMs
   );
   let previousPositions = getPositionsAtElapsed(startElapsed);
+  const frozenPositions = new Map();
+  const reportedPairs = new Set();
+  const collisions = [];
+
   for (let step = 1; step <= sampleCount; step += 1) {
     const timeElapsed =
       startElapsed + ((endElapsed - startElapsed) * step) / sampleCount;
-    const currentPositions = getPositionsAtElapsed(timeElapsed);
-    const collisions = findVehicleCollisions(
+    const currentPositions = getPositionsAtElapsed(timeElapsed).map(
+      (vehicle) => ({
+        ...vehicle,
+        position: frozenPositions.get(vehicle.id) || vehicle.position,
+      })
+    );
+    const intervalCollisions = findVehicleCollisions(
       previousPositions,
       currentPositions,
       thresholdMeters
     );
-    if (collisions.length > 0) {
-      return { collisions, currentPositions };
+
+    for (const collision of intervalCollisions) {
+      const pairKey = JSON.stringify(
+        [collision.vehicleAId, collision.vehicleBId].sort()
+      );
+      if (reportedPairs.has(pairKey)) continue;
+
+      reportedPairs.add(pairKey);
+      collisions.push(collision);
+      if (!frozenPositions.has(collision.vehicleAId)) {
+        frozenPositions.set(collision.vehicleAId, collision.location);
+      }
+      if (!frozenPositions.has(collision.vehicleBId)) {
+        frozenPositions.set(collision.vehicleBId, collision.location);
+      }
     }
-    previousPositions = currentPositions;
+
+    previousPositions = currentPositions.map((vehicle) => ({
+      ...vehicle,
+      position: frozenPositions.get(vehicle.id) || vehicle.position,
+    }));
   }
 
-  return null;
+  return collisions.length > 0
+    ? { collisions, currentPositions: previousPositions }
+    : null;
 }
 
 export function normalizeNavigationRoutes(routes, routePrefix = "route") {

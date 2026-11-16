@@ -1,5 +1,6 @@
 
-require("dotenv").config();
+const path = require("node:path");
+require("dotenv").config({ path: path.join(__dirname, ".env") });
 
 const express = require("express");
 const cors = require("cors");
@@ -268,6 +269,11 @@ app.post("/api/report", async (req, res) => {
   });
 });
 
-app.listen(3001, "127.0.0.1", () => {
-  console.log("Notification service running at http://localhost:3001");
+const port = Number(process.env.NOTIFICATION_PORT || 3001);
+if (!Number.isInteger(port) || port < 1 || port > 65535) {
+  throw new Error("NOTIFICATION_PORT must be an integer between 1 and 65535.");
+}
+
+app.listen(port, "127.0.0.1", () => {
+  console.log(`Notification service running at http://127.0.0.1:${port}`);
 });
