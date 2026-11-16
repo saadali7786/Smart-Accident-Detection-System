@@ -241,7 +241,7 @@ $viteEntry = Join-Path $frontendDirectory "node_modules\vite\bin\vite.js"
 Start-CheckedProcess `
     "frontend" `
     $node.Source `
-    @($viteEntry, "--host", "127.0.0.1", "--port", "$frontendPort", "--strictPort") `
+    @("`"$viteEntry`"", "--host", "127.0.0.1", "--port", "$frontendPort", "--strictPort") `
     $frontendDirectory `
     $frontendPort `
     "http://127.0.0.1:$frontendPort/" `
