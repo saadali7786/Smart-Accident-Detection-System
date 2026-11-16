@@ -246,6 +246,7 @@ def ai_status():
 
 @app.post("/api/ai/upload")
 async def upload_video(file: UploadFile = File(...)):
+    global VIDEO_PATH
 
     if not file.filename or not file.filename.lower().endswith(
         (".mp4", ".avi", ".mov", ".mkv")
@@ -307,10 +308,14 @@ async def upload_video(file: UploadFile = File(...)):
                 detail="Uploaded video is empty.",
             )
 
+        new_video_path = UPLOAD_DIR / f"uploaded_video_{uuid.uuid4().hex}.mp4"
+
         os.replace(
             UPLOAD_TEMP_PATH,
-            VIDEO_PATH,
+            new_video_path,
         )
+
+        VIDEO_PATH = new_video_path
 
         OUTPUT_PATH.unlink(missing_ok=True)
         BROWSER_OUTPUT_PATH.unlink(missing_ok=True)
