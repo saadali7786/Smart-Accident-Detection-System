@@ -342,10 +342,7 @@ class AccidentAnalyzer:
                 "minimum_contact_observations": self.config.minimum_contact_observations,
             },
             "events": events,
-            "note": (
-                "YOLO and tracking provide visual indicators only. "
-                "No video-only event is confirmed without independent validation."
-            ),
+            "note": "Video indicators only; not independently confirmed.",
         }
 
     def _make_sample(self, track_id, box, frame_index, timestamp, frame_diagonal):

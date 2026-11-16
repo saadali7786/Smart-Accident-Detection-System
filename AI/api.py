@@ -723,12 +723,7 @@ def detect_vehicles():
                 AI_FORWARD_CONFIDENCE_THRESHOLD
             ),
             "forwarding_status": BACKEND_FORWARDER.status(),
-            "forwarding_note": (
-                "Only suspected-or-higher classifications, or "
-                "potential events with a numeric confidence score "
-                "meeting the configured threshold, are submitted. "
-                "Video-only indicators remain unconfirmed."
-            ),
+            "forwarding_note": "Only qualified indicators are forwarded to C++.",
             "output": "/api/ai/result",
             "note": analysis["note"],
         }

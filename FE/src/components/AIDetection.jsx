@@ -305,10 +305,7 @@ export default function AIDetection() {
 
           <h2>AI Vehicle Detection</h2>
 
-          <p>
-            Upload traffic footage for YOLO + ByteTrack vehicle
-            detection and potential accident indicator analysis.
-          </p>
+          <p>Review vehicle and incident indicators from video.</p>
         </div>
 
         <BrainCircuit size={26} />
@@ -317,11 +314,7 @@ export default function AIDetection() {
       {aiBackendOnline === false && (
         <div className="ai-backend-warning">
           <AlertTriangle size={16} />
-
-          AI backend offline. Start it with:{" "}
-          <code>
-            uvicorn api:app --app-dir AI --port 5001
-          </code>
+          AI service offline.
 
           <button
             className="ai-retry-btn"
@@ -356,11 +349,11 @@ export default function AIDetection() {
           </p>
 
           <input
+            className="ai-file-input"
             type="file"
             accept=".mp4,.avi,.mov,.mkv"
             onChange={handleFileChange}
             id="ai-file-input"
-            style={{ display: "none" }}
           />
 
           <label
@@ -447,10 +440,7 @@ export default function AIDetection() {
 
         <div className="ai-info-box">
           <BrainCircuit size={14} />
-
-          Tracks vehicles using YOLO11n + ByteTrack and
-          classifies observed indicators as potential or
-          suspected. Video-only analysis does not confirm a crash.
+          YOLO11n + ByteTrack · video indicators only, not crash confirmation.
         </div>
 
         <button
@@ -597,17 +587,9 @@ export default function AIDetection() {
               </div>
             </div>
 
-            {result.note && (
-              <p className="ai-disclaimer">
-                <AlertTriangle size={13} /> {result.note}
-              </p>
-            )}
-
-            {result.forwarding_note && (
-              <p className="ai-disclaimer">
-                {result.forwarding_note}
-              </p>
-            )}
+            <p className="ai-disclaimer">
+              <AlertTriangle size={13} /> Video indicators only · not confirmed.
+            </p>
           </div>
 
           {/* 04 - Flagged Events */}
@@ -636,48 +618,41 @@ export default function AIDetection() {
                       </strong>
 
                       <span
-                        className={`event-badge ${
-                          ev.classification ===
-                          "suspected_accident"
-                            ? "severe"
-                            : "moderate"
-                        }`}
+                        className={`event-badge confidence-${ev.confidence || "low"}`}
                       >
                         {ev.confidence} confidence
                       </span>
                     </div>
 
                     <p>
-                      Time: {ev.timestamp} &nbsp;|&nbsp;
-                      Frame: {ev.frame}
+                      {ev.timestamp} · Frame {ev.frame} · Vehicles{" "}
+                      {(ev.involved_vehicle_ids || []).join(", ") || "—"}
                     </p>
 
                     <p>
-                      Vehicle IDs:{" "}
-                      {(ev.involved_vehicle_ids || []).join(", ")}
+                      {ev.evidence
+                        ?.slice(0, 2)
+                        .map((item) => item.label)
+                        .join(" · ") ||
+                        ev.reason ||
+                        "Possible incident indicators"}
                     </p>
 
-                    <p>{ev.reason}</p>
-
                     {ev.evidence?.length > 0 && (
-                      <ul className="ai-evidence-list">
-                        {ev.evidence.map((item, index) => (
-                          <li
-                            key={`${item.type || "evidence"}-${index}`}
-                          >
-                            {item.label} ({item.observations}{" "}
-                            observation
-                            {item.observations === 1 ? "" : "s"})
-                          </li>
-                        ))}
-                      </ul>
+                      <details className="ai-evidence-details">
+                        <summary>Evidence · {ev.evidence.length}</summary>
+                        <ul className="ai-evidence-list">
+                          {ev.evidence.map((item, index) => (
+                            <li key={`${item.type || "evidence"}-${index}`}>
+                              {item.label} · {item.observations}{" "}
+                              {item.observations === 1 ? "frame" : "frames"}
+                            </li>
+                          ))}
+                        </ul>
+                      </details>
                     )}
 
-                    <small>
-                      Visual indicators only. Independent
-                      validation is required; this analysis does
-                      not confirm an accident.
-                    </small>
+                    <small>Video-only · unconfirmed.</small>
                   </div>
                 ))}
               </div>
@@ -693,8 +668,8 @@ export default function AIDetection() {
 
                 <span>
                   {result.overall_classification === "uncertain"
-                    ? "There was not enough reliable tracking evidence to assess traffic."
-                    : "This video-only analysis cannot establish that no accident occurred."}
+                    ? "Not enough tracking evidence."
+                    : "No indicators found; an accident is not ruled out."}
                 </span>
               </div>
             )}

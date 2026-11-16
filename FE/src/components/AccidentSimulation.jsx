@@ -2,15 +2,22 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import {
+  Pause,
+  Play,
+  RotateCcw,
+  ShieldAlert,
+} from "lucide-react";
+import {
   CircleMarker,
   MapContainer,
   Marker,
   Polyline,
   Popup,
-  TileLayer,
+  Tooltip,
   useMap,
 } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
+import DarkMapLayer from "./DarkMapLayer";
 import {
   bearingAtFraction,
   buildRoutePair,
@@ -32,6 +39,13 @@ const COLLISION_INTERSECTION = {
 const ARRIVAL_BEARINGS = [135, 315];
 const SIMULATION_DURATION_MS = 8500;
 const SIMULATION_SPEED_OPTIONS_KMH = [5, 10, 20, 30, 40];
+const TRAFFIC_ROUTE_COLOR = "#29c8df";
+const TRAFFIC_VEHICLE_COLORS = [
+  "#29c8df",
+  "#ffb95c",
+  "#6ba6ff",
+  "#ab91ff",
+];
 const DEFAULT_BACKEND_URL =
   import.meta.env.VITE_BACKEND_API_URL || "http://localhost:8080";
 const DEFAULT_NOTIFICATION_URL =
@@ -475,7 +489,6 @@ function areTrafficRoutesDistinct(first, second) {
 }
 
 function createTrafficFleet(routes, intersection) {
-  const colors = ["#256b9d", "#a83f3f", "#3b7052", "#a77a2d"];
   const vehicles = [];
   const addVehicle = (
     id,
@@ -484,6 +497,7 @@ function createTrafficFleet(routes, intersection) {
     endFraction,
     delayFraction,
     type,
+    collisionParticipant = true,
   ) => {
     vehicles.push({
       id,
@@ -492,7 +506,11 @@ function createTrafficFleet(routes, intersection) {
       endFraction,
       delayFraction,
       type,
-      color: colors[vehicles.length % colors.length],
+      collisionParticipant,
+      color:
+        TRAFFIC_VEHICLE_COLORS[
+          vehicles.length % TRAFFIC_VEHICLE_COLORS.length
+        ],
     });
   };
 
@@ -563,26 +581,24 @@ function createTrafficFleet(routes, intersection) {
 
   const unusedRouteIndexes = routes
     .map((_, index) => index)
-    .filter(
-      (index) =>
-        !intersection ||
-        (index !== intersection.routeIndexA &&
-          index !== intersection.routeIndexB)
-    );
-  while (vehicles.length < 4) {
+    .filter((index) => !intersection || (
+      index !== intersection.routeIndexA && index !== intersection.routeIndexB
+    ));
+  while (vehicles.length < 4 && routes.length > 1) {
     const vehicleIndex = vehicles.length;
     const routeIndex =
       unusedRouteIndexes.length > 0
         ? unusedRouteIndexes.shift()
-        : vehicleIndex % routes.length;
+        : (vehicleIndex + 1) % routes.length;
     const reverse = vehicleIndex % 2 === 1;
     addVehicle(
       `SIM-CAR-0${vehicleIndex + 1}`,
       routeIndex,
-      reverse ? 0.92 : 0.08,
-      reverse ? 0.08 : 0.92,
+      reverse ? 0.94 : 0.06,
+      reverse ? 0.06 : 0.94,
       0.08,
-      vehicleIndex % 2 === 1 ? "suv" : "sedan"
+      ["suv", "sedan", "hatchback", "van"][vehicleIndex % 4],
+      vehicleIndex < 2
     );
   }
 
@@ -714,11 +730,22 @@ function MultiVehicleTraffic({
       }
       const selectedIntersection =
         intersections[Math.floor(Math.random() * intersections.length)] || null;
+      const selectedRouteIndexes = selectedIntersection
+        ? [selectedIntersection.routeIndexA, selectedIntersection.routeIndexB]
+        : distinctRoutes.slice(0, 2).map((_, index) => index);
+      const selectedRoutes = selectedRouteIndexes.map(
+        (routeIndex) => distinctRoutes[routeIndex]
+      );
+      const selectedPathsIntersection = selectedIntersection
+        ? { ...selectedIntersection, routeIndexA: 0, routeIndexB: 1 }
+        : null;
 
-      setTrafficRoutes(distinctRoutes);
-      setIntersection(selectedIntersection);
-      setTrafficFleet(createTrafficFleet(distinctRoutes, selectedIntersection));
-      if (distinctRoutes.length < 2) {
+      setTrafficRoutes(selectedRoutes);
+      setIntersection(selectedPathsIntersection);
+      setTrafficFleet(
+        createTrafficFleet(selectedRoutes, selectedPathsIntersection)
+      );
+      if (selectedRoutes.length < 2) {
         setRouteError(
           "Only one distinct route was available. Vehicles can still follow it, but road-to-road collisions require more route data."
         );
@@ -797,11 +824,33 @@ function MultiVehicleTraffic({
     () => getVehiclePositionsAtElapsed(elapsedMs),
     [elapsedMs, getVehiclePositionsAtElapsed]
   );
+  const displayedRoutes = useMemo(
+    () =>
+      trafficFleet
+        .map((vehicle) => ({
+          route: trafficRoutes[vehicle.routeIndex],
+          vehicle,
+        }))
+        .filter(({ route }) => Boolean(route)),
+    [trafficFleet, trafficRoutes]
+  );
+  const displayedPaths = useMemo(
+    () =>
+      trafficRoutes.map((route, index) => ({
+        route,
+        index,
+        color: TRAFFIC_ROUTE_COLOR,
+      })),
+    [trafficRoutes]
+  );
 
   const findCollisionsAcrossElapsed = useCallback(
     (startElapsed, endElapsed) => {
       return findVehicleCollisionsAlongInterval(
-        getVehiclePositionsAtElapsed,
+        (elapsed) =>
+          getVehiclePositionsAtElapsed(elapsed).filter(
+            (vehicle) => vehicle.collisionParticipant
+          ),
         startElapsed,
         endElapsed,
         {
@@ -1007,10 +1056,15 @@ function MultiVehicleTraffic({
     previousElapsedRef.current = null;
   };
 
-  const mapBounds = useMemo(
-    () => trafficRoutes.flatMap((route) => route.coordinates),
-    [trafficRoutes]
-  );
+  const mapBounds = useMemo(() => {
+    const coordinates = [
+      ...displayedRoutes.flatMap(({ route }) => route.coordinates),
+      [startPlace.lat, startPlace.lon],
+      [destinationPlace.lat, destinationPlace.lon],
+    ];
+    if (intersection?.location) coordinates.push(intersection.location);
+    return coordinates;
+  }, [destinationPlace, displayedRoutes, intersection, startPlace]);
 
   return (
     <div className="traffic-page">
@@ -1037,9 +1091,9 @@ function MultiVehicleTraffic({
         </button>
         <span
           className="traffic-demo-badge"
-          title="Vehicle positions are simulated from road geometry; this is not live GPS."
+          title="Simulated routes and map-derived coordinates; not live GPS"
         >
-          DEMO · Simulated GPS
+          SIMULATION · DEMO ONLY
         </span>
       </div>
 
@@ -1048,155 +1102,191 @@ function MultiVehicleTraffic({
           {routeError}
         </div>
       )}
-      <section className="traffic-map-card" aria-label="Karachi multi-vehicle traffic map">
-        <div className="traffic-map-frame">
-          <MapContainer
-            center={[startPlace.lat, startPlace.lon]}
-            zoom={12}
-            style={{ height: "100%", width: "100%" }}
-          >
-            <TileLayer
-              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-            />
-            {mapBounds.length > 1 && <FitRoute coordinates={mapBounds} />}
-            {[...trafficRoutes.slice(1), ...trafficRoutes.slice(0, 1)].flatMap(
-              (route) => {
-                const selected = route.id === trafficRoutes[0]?.id;
-                return [
-                  <Polyline
-                    key={`${route.id}-casing`}
-                    positions={route.coordinates}
-                    pathOptions={{
-                      color: "#fff",
-                      weight: selected ? 10 : 8,
-                      opacity: 0.92,
-                      lineCap: "round",
-                      lineJoin: "round",
-                    }}
-                  />,
-                  <Polyline
-                    key={route.id}
-                    positions={route.coordinates}
-                    pathOptions={{
-                      color: selected ? "#2478f2" : "#1c9a58",
-                      weight: selected ? 6 : 4,
-                      opacity: selected ? 1 : 0.94,
-                      lineCap: "round",
-                      lineJoin: "round",
-                    }}
-                  >
-                    <Popup>
-                      {selected ? "Selected route" : "Alternative route"}:{" "}
-                      {route.label} · {route.distanceKm.toFixed(1)} km
-                    </Popup>
-                  </Polyline>,
-                ];
-              }
-            )}
-            <CircleMarker
+      <div className="traffic-workspace">
+        <section className="traffic-map-card" aria-label="Karachi multi-vehicle traffic map">
+          <div className="traffic-map-frame">
+            <MapContainer
               center={[startPlace.lat, startPlace.lon]}
-              radius={6}
-              pathOptions={{
-                color: "#fff",
-                fillColor: "#159447",
-                fillOpacity: 1,
-                weight: 2,
-              }}
+              zoom={12}
+              scrollWheelZoom
+              fadeAnimation={false}
+              zoomAnimation={false}
+              style={{ height: "100%", width: "100%" }}
             >
-              <Popup>Start: {startPlace.name}</Popup>
-            </CircleMarker>
-            <CircleMarker
-              center={[destinationPlace.lat, destinationPlace.lon]}
-              radius={6}
-              pathOptions={{
-                color: "#fff",
-                fillColor: "#e45d4f",
-                fillOpacity: 1,
-                weight: 2,
-              }}
-            >
-              <Popup>Destination: {destinationPlace.name}</Popup>
-            </CircleMarker>
-            {incident && hospitalRouteStatus === "ready" && hospitalRoute && (
-              <Polyline
-                positions={hospitalRoute.coordinates}
-                pathOptions={{
-                  color: "#d97706",
-                  weight: 4,
-                  opacity: 0.88,
-                  dashArray: "7 8",
-                }}
-              />
-            )}
-            {incident &&
-              hospitals.map((hospital) => (
-                <Marker
-                  key={hospital.id}
-                  position={[hospital.lat, hospital.lon]}
-                  icon={hospitalIcon}
+              <DarkMapLayer />
+              {mapBounds.length > 1 && <FitRoute coordinates={mapBounds} />}
+              {displayedPaths.flatMap(({ route, index, color }) => [
+                <Polyline
+                  key={`route-${index}-casing`}
+                  positions={route.coordinates}
+                  pathOptions={{
+                    color: "#07111b",
+                    weight: 10,
+                    opacity: 0.96,
+                    lineCap: "round",
+                    lineJoin: "round",
+                  }}
+                />,
+                <Polyline
+                  key={`route-${index}`}
+                  positions={route.coordinates}
+                  pathOptions={{
+                    color,
+                    weight: 5,
+                    opacity: 0.98,
+                    lineCap: "round",
+                    lineJoin: "round",
+                  }}
                 >
                   <Popup>
-                    {hospital.name} · {hospital.distance.toFixed(2)} km
+                    Path {index + 1} · {route.label} · {route.distanceKm.toFixed(1)} km
+                  </Popup>
+                </Polyline>,
+              ])}
+              {displayedRoutes.map(({ route, vehicle }) => (
+                <CircleMarker
+                  key={`${vehicle.id}-start`}
+                  center={pointAtFraction(route.coordinates, vehicle.startFraction)}
+                  radius={7}
+                  pathOptions={{
+                    color: "#07111b",
+                    fillColor: vehicle.color,
+                    fillOpacity: 1,
+                    weight: 2,
+                  }}
+                />
+              ))}
+              <CircleMarker
+                center={[startPlace.lat, startPlace.lon]}
+                radius={5}
+                pathOptions={{
+                  color: "#d9fbff",
+                  fillColor: "#22c7a2",
+                  fillOpacity: 1,
+                  weight: 2,
+                }}
+              >
+                <Popup>Start location: {startPlace.name}</Popup>
+              </CircleMarker>
+              <CircleMarker
+                center={[destinationPlace.lat, destinationPlace.lon]}
+                radius={5}
+                pathOptions={{
+                  color: "#d9fbff",
+                  fillColor: "#5aa8ff",
+                  fillOpacity: 1,
+                  weight: 2,
+                }}
+              >
+                <Popup>Destination: {destinationPlace.name}</Popup>
+              </CircleMarker>
+              {incident && hospitalRouteStatus === "ready" && hospitalRoute && (
+                <Polyline
+                  positions={hospitalRoute.coordinates}
+                  pathOptions={{
+                    color: "#f2bf63",
+                    weight: 4,
+                    opacity: 0.94,
+                    dashArray: "7 8",
+                  }}
+                />
+              )}
+              {incident &&
+                hospitals.map((hospital) => (
+                  <Marker
+                    key={hospital.id}
+                    position={[hospital.lat, hospital.lon]}
+                    icon={hospitalIcon}
+                  >
+                    <Popup>
+                      {hospital.name} · {hospital.distance.toFixed(2)} km
+                      <br />
+                      OSM listing · phone unverified.
+                    </Popup>
+                  </Marker>
+                ))}
+              {vehiclePositions.map((vehicle) => (
+                <Marker
+                  key={vehicle.id}
+                  position={vehicle.position}
+                  icon={carIcon(vehicle.heading, vehicle.type, vehicle.color)}
+                  zIndexOffset={vehicle.crashed ? 1700 : 1200}
+                  keyboard={false}
+                >
+                  <Popup>
+                    {vehicle.id} ·{" "}
+                    {vehicle.crashed
+                      ? "Collision stopped"
+                      : vehicle.moving
+                        ? "Moving"
+                        : "On route"}
                     <br />
-                    OSM listing; phone numbers are not independently verified.
+                    {vehicle.route?.label}
                   </Popup>
                 </Marker>
               ))}
-            {vehiclePositions.map((vehicle) => (
-              <Marker
-                key={vehicle.id}
-                position={vehicle.position}
-                icon={carIcon(vehicle.heading, vehicle.type, vehicle.color)}
-                zIndexOffset={vehicle.crashed ? 1700 : 1200}
-                keyboard={false}
-              >
-                <Popup>
-                  {vehicle.id} ·{" "}
-                  {vehicle.crashed
-                    ? "Collision stopped"
-                    : vehicle.moving
-                      ? "Moving"
-                      : "On route"}
-                  <br />
-                  {vehicle.route?.label}
-                </Popup>
-              </Marker>
-            ))}
-            {collisionEvents.map((event) => (
-              <Marker
-                key={event.eventId}
-                position={[event.latitude, event.longitude]}
-                icon={accidentIcon}
-                zIndexOffset={1900}
-              >
-                <Popup>
-                  Collision · {event.accidentId || event.eventId}
-                  <br />
-                  {event.severity || "Backend classification pending"}
-                </Popup>
-              </Marker>
-            ))}
-          </MapContainer>
+              {collisionEvents.map((event) => (
+                <Marker
+                  key={event.eventId}
+                  position={[event.latitude, event.longitude]}
+                  icon={accidentIcon}
+                  zIndexOffset={1900}
+                >
+                  <Popup>
+                    Collision · {event.accidentId || event.eventId}
+                    <br />
+                    {event.severity || "Backend classification pending"}
+                  </Popup>
+                </Marker>
+              ))}
+            </MapContainer>
 
-          <div className="traffic-map-live-status" role="status" aria-live="polite">
-            <span>{trafficFleet.length} vehicles</span>
-            <span>
-              {Math.round(
-                (elapsedMs / Math.max(trafficPlaybackDuration, 1)) * 100
+            <div className="traffic-map-live-status" role="status" aria-live="polite">
+              <span className={`traffic-status-dot ${runStatus}`} />
+              <span>{runStatus === "idle" ? "STANDBY" : runStatus.toUpperCase()}</span>
+              <span>{trafficFleet.length} cars</span>
+              <span>{collisionEvents.length} collisions</span>
+            </div>
+
+            <div className="traffic-map-legend" aria-label="Map route legend">
+              {displayedPaths.map(({ route, index, color }) => (
+                <span key={`path-legend-${index}`}>
+                  <i className="traffic-legend-line" style={{ backgroundColor: color }} />
+                  Path {index + 1}
+                </span>
+              ))}
+              {vehiclePositions.map((vehicle) => (
+                <span key={`car-legend-${vehicle.id}`}>
+                  <i className="traffic-legend-car" style={{ backgroundColor: vehicle.color }} />
+                  {vehicle.id.replace("SIM-CAR-", "Car ")}
+                </span>
+              ))}
+              {incident && hospitalRouteStatus === "ready" && (
+                <span><i className="traffic-legend-line hospital" />Hospital route</span>
               )}
-              % route
+            </div>
+          </div>
+        </section>
+
+        <aside className="traffic-control-panel" aria-label="Traffic simulation controls">
+          <div className="traffic-control-heading">
+            <div>
+              <span className="traffic-control-eyebrow">MISSION CONTROL</span>
+              <h2>Simulation</h2>
+            </div>
+            <span className={`traffic-status-pill ${runStatus}`}>
+              {runStatus === "idle" ? "STANDBY" : runStatus.toUpperCase()}
             </span>
-            <span>{collisionEvents.length} collisions</span>
           </div>
 
-          <div className="traffic-map-controls" aria-label="Traffic simulation controls">
+          <div className="traffic-control-buttons">
             <button
               type="button"
               className="traffic-control-button traffic-control-start"
-              disabled={!trafficRoutes.length || routeLoading || runStatus === "running"}
+              disabled={!trafficRoutes.length || trafficFleet.length !== 4 || routeLoading || runStatus === "running"}
               onClick={startTraffic}
             >
+              <Play size={15} />
               {runStatus === "completed" ? "Run again" : "Start"}
             </button>
             <button
@@ -1205,6 +1295,7 @@ function MultiVehicleTraffic({
               disabled={runStatus !== "running"}
               onClick={pauseTraffic}
             >
+              <Pause size={15} />
               Pause
             </button>
             <button
@@ -1213,6 +1304,7 @@ function MultiVehicleTraffic({
               disabled={runStatus !== "paused"}
               onClick={resumeTraffic}
             >
+              <Play size={15} />
               Resume
             </button>
             <button
@@ -1221,10 +1313,14 @@ function MultiVehicleTraffic({
               disabled={runStatus === "idle"}
               onClick={resetTraffic}
             >
+              <RotateCcw size={15} />
               Reset
             </button>
+          </div>
+
+          <div className="traffic-control-fields">
             <label className="traffic-select-control">
-              Speed
+              Playback speed
               <select
                 aria-label="Playback speed"
                 value={playbackSpeed}
@@ -1236,8 +1332,8 @@ function MultiVehicleTraffic({
                 <option value={2}>2×</option>
               </select>
             </label>
-            <label className="traffic-select-control traffic-score-control">
-              Impact input
+            <label className="traffic-select-control">
+              Demo impact input
               <select
                 aria-label="C++ demo impact input"
                 value={simulationSpeedKmh}
@@ -1245,7 +1341,7 @@ function MultiVehicleTraffic({
                   setSimulationSpeedKmh(Number(event.target.value))
                 }
                 disabled={runStatus === "running"}
-                title="Demo score input only; not vehicle sensor telemetry."
+                title="Demo input only; not vehicle sensor telemetry."
               >
                 {SIMULATION_SPEED_OPTIONS_KMH.map((speed) => (
                   <option key={speed} value={speed}>
@@ -1253,37 +1349,64 @@ function MultiVehicleTraffic({
                   </option>
                 ))}
               </select>
-            </label>
-            <label
-              className="traffic-demo-alert-control"
-              title="Only configured demo recipients may receive test alerts. Hospitals are never messaged."
-            >
-              <input
-                type="checkbox"
-                aria-label="Allow configured DEMO SMS after a Severe classification. No hospital or real emergency contacts are messaged."
-                checked={sendDemoAlerts}
-                onChange={(event) => setSendDemoAlerts(event.target.checked)}
-                disabled={runStatus === "running"}
-              />
-              DEMO SMS
+              <small className="traffic-impact-note">
+                Demo score: 5 No Accident · 10 Minor · 20 Moderate · 30+ Severe
+              </small>
             </label>
           </div>
 
-          <div className="traffic-map-legend" aria-label="Map route legend">
-            <span><i className="traffic-legend-line selected" />Selected route</span>
-            <span><i className="traffic-legend-line alternative" />Alternative</span>
-            {incident && hospitalRouteStatus === "ready" && (
-              <span><i className="traffic-legend-line hospital" />Hospital route</span>
-            )}
+          <label
+            className="traffic-demo-alert-control"
+            title="Demo recipients only · no hospital alerts"
+          >
+            <input
+              type="checkbox"
+              aria-label="Send test SMS to configured demo recipients for Severe events only"
+              checked={sendDemoAlerts}
+              onChange={(event) => setSendDemoAlerts(event.target.checked)}
+              disabled={runStatus === "running"}
+            />
+            <span>Test SMS · configured demo contacts only</span>
+          </label>
+
+          <div className="traffic-control-metrics">
+            <div><span>Vehicles</span><strong>{trafficFleet.length}</strong></div>
+            <div>
+              <span>Progress</span>
+              <strong>{Math.round((elapsedMs / Math.max(trafficPlaybackDuration, 1)) * 100)}%</strong>
+            </div>
+            <div><span>Collisions</span><strong>{collisionEvents.length}</strong></div>
           </div>
-        </div>
-      </section>
+          <div
+            className="traffic-progress-track"
+            role="progressbar"
+            aria-label="Simulation progress"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={Math.round((elapsedMs / Math.max(trafficPlaybackDuration, 1)) * 100)}
+          >
+            <i
+              style={{
+                width: `${Math.min(100, Math.round((elapsedMs / Math.max(trafficPlaybackDuration, 1)) * 100))}%`,
+              }}
+            />
+          </div>
+
+          <div className="traffic-demo-warning">
+            <ShieldAlert size={16} />
+            <span>SIMULATION · DEMO ONLY</span>
+          </div>
+          <p className="traffic-control-note">
+            Map-derived positions · not live GPS or emergency dispatch.
+          </p>
+        </aside>
+      </div>
 
       {incident && (
         <section className="traffic-response-card" aria-live="polite">
           <div className="traffic-response-summary">
             <div className="traffic-response-title">
-              <strong>Accident detected</strong>
+              <strong>SIMULATED ACCIDENT · DEMO ONLY</strong>
               <span>{classification?.severity || "Classification pending"}</span>
             </div>
             <div className="traffic-response-facts">
@@ -1300,6 +1423,10 @@ function MultiVehicleTraffic({
               <span>
                 <small>Location</small>
                 {incident.latitude.toFixed(5)}, {incident.longitude.toFixed(5)}
+              </span>
+              <span>
+                <small>Timestamp</small>
+                {new Date(incident.timestamp).toLocaleString()}
               </span>
               <span>
                 <small>Processing</small>
@@ -1377,7 +1504,7 @@ function MultiVehicleTraffic({
                 <span>{hospital.distance.toFixed(2)} km</span>
                 {hospital.address && <small>{hospital.address}</small>}
                 {hospital.phone && (
-                  <small>OSM-listed phone (not verified): {hospital.phone}</small>
+                  <small>OSM phone · unverified: {hospital.phone}</small>
                 )}
                 <a
                   href={`https://www.google.com/maps?q=${hospital.lat},${hospital.lon}`}
@@ -1389,7 +1516,7 @@ function MultiVehicleTraffic({
               </div>
             ))}
             <p className="traffic-response-note">
-              Demo coordinates are map-derived, not live GPS. No hospital is messaged.
+              Map-derived location · No live GPS or hospital alerts.
             </p>
           </details>
         </section>
@@ -2233,10 +2360,7 @@ export default function AccidentSimulation({
           color: "#fde68a",
         }}
       >
-        DEMO ONLY — two vehicles approach on separate real-road routes and
-        automatically collide at the mapped intersection. Coordinates are
-        map-derived, not live GPS. Severity and impact score come from the C++
-        backend; no real emergency contact is messaged.
+        SIMULATED ACCIDENT · DEMO ONLY — Map-derived location; no live GPS or emergency dispatch.
       </div>
 
       {mode === "navigation" ? (
@@ -2247,7 +2371,7 @@ export default function AccidentSimulation({
             </div>
             <strong style={{ fontSize: 19 }}>
               {navigationStatus === "running"
-                ? "DEMO route in progress"
+                ? "Route in progress"
                 : navigationStatus === "paused"
                   ? "Navigation paused"
                   : navigationStatus === "completed"
@@ -2271,7 +2395,7 @@ export default function AccidentSimulation({
           </div>
           <div style={{ ...cardStyle, flex: 1, minWidth: 180 }}>
             <div style={{ color: "#94a3b8", fontSize: 12 }}>
-              VEHICLE POSITION · DEMO
+              VEHICLE POSITION
             </div>
             <strong style={{ fontSize: 14 }}>
               {navigationPosition[0].toFixed(5)},{" "}
@@ -2332,7 +2456,7 @@ export default function AccidentSimulation({
             htmlFor="simulation-speed"
             style={{ color: "#b9c9dc", fontWeight: 700 }}
           >
-            C++ score input per vehicle
+            Impact score input
           </label>
           <select
             id="simulation-speed"
@@ -2357,9 +2481,7 @@ export default function AccidentSimulation({
             ))}
           </select>
           <small style={{ color: "#9bacbf" }}>
-            This demo input is sent to the existing C++ score formula; it is
-            not measured GPS, speed, or impact-sensor data. The road animation
-            is accelerated for demonstration.
+            Demo score only · Not sensor data · Accelerated playback.
           </small>
         </div>
       )}
@@ -2385,7 +2507,7 @@ export default function AccidentSimulation({
             <p style={{ color: "#94a3b8", margin: "5px 0 0" }}>
               {mode === "navigation"
                 ? "Search real places and preview road routes."
-                : "Sedan and SUV approach on intersecting roads, collide, and trigger C++ accident classification."}
+                : "Two cars meet at a shared road intersection."}
             </p>
           </div>
 
@@ -2590,9 +2712,7 @@ export default function AccidentSimulation({
                   />
                 </div>
                 <small style={{ color: "#9bacbf" }}>
-                  Route geometry and travel-time estimates come from OSRM; playback
-                  is accelerated for demonstration. It is not live GPS or live
-                  traffic.
+                  OSRM route · Accelerated playback · Not live GPS or traffic.
                 </small>
               </>
             )}
@@ -2614,21 +2734,11 @@ export default function AccidentSimulation({
               onChange={(event) => setSendDemoAlerts(event.target.checked)}
               disabled={status === "running"}
             />
-            After C++ classifies the collision as Severe, send a DEMO SMS to
-            the two configured demo contacts. This is not an emergency
-            contact or hospital notification.
+            Send a test SMS to configured demo contacts for Severe events only.
           </label>
         )}
 
-        <div
-          style={{
-            height: 510,
-            width: "100%",
-            borderRadius: 10,
-            overflow: "hidden",
-            background: "#e2e8f0",
-          }}
-        >
+        <div className="legacy-simulation-map">
           <MapContainer
             center={
               mode === "navigation"
@@ -2636,12 +2746,11 @@ export default function AccidentSimulation({
                 : KARACHI_CENTER
             }
             zoom={12}
+            fadeAnimation={false}
+            zoomAnimation={false}
             style={{ height: "100%", width: "100%" }}
           >
-            <TileLayer
-              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-            />
+            <DarkMapLayer />
 
             {mode === "navigation" && navigationRoutes.length > 0 && (
               <FitRoute coordinates={navigationBounds} />
@@ -2661,7 +2770,7 @@ export default function AccidentSimulation({
                       },
                     }}
                     pathOptions={{
-                      color: selectedRouteIndex === index ? "#2563eb" : "#159447",
+                      color: selectedRouteIndex === index ? "#43d9e8" : "#ffb95c",
                       weight: selectedRouteIndex === index ? 7 : 5,
                       opacity: selectedRouteIndex === index ? 0.95 : 0.78,
                     }}
@@ -2864,15 +2973,12 @@ export default function AccidentSimulation({
               </span>
             ))}
             <span style={{ width: "100%" }}>
-              Traffic colors are legend-only until a real traffic feed is connected.
+              No live traffic feed connected.
             </span>
           </div>
         ) : (
           <p style={{ color: "#94a3b8", fontSize: 12, marginBottom: 0 }}>
-            Blue and orange lines = separate routes to the shared collision point
-            · Green and purple dots = vehicle starts · Red marker = simulated
-            collision · Yellow dashed line = route to nearest listed hospital
-            · Red crosses = hospitals
+            A/B routes · Starts · Collision · Hospital route and markers
           </p>
         )}
       </div>
@@ -2891,15 +2997,15 @@ export default function AccidentSimulation({
 
           <p>
             <strong>Accident ID:</strong>{" "}
-            {classification?.accidentId ?? "Awaiting C++ backend"}
+            {classification?.accidentId ?? "Pending"}
           </p>
 
           <p>
-            <strong>Simulation event ID:</strong> {incident.eventId}
+            <strong>Event:</strong> {incident.eventId}
           </p>
 
           <p>
-            <strong>C++ decision-tree severity:</strong>{" "}
+            <strong>Severity:</strong>{" "}
             {classification?.severity ||
               (incidentSaveState.status === "error"
                 ? "Not classified — backend request failed"
@@ -2907,12 +3013,12 @@ export default function AccidentSimulation({
           </p>
 
           <p>
-            <strong>C++ impact score:</strong>{" "}
+            <strong>Impact score:</strong>{" "}
             {classification?.impactScore ?? "Pending backend calculation"}
           </p>
 
           <p>
-            <strong>DSA processing status:</strong>{" "}
+            <strong>Queue:</strong>{" "}
             {classification?.processingStatus ||
               (incidentSaveState.status === "error"
                 ? "Not queued"
@@ -2920,15 +3026,11 @@ export default function AccidentSimulation({
           </p>
 
           <p>
-            <strong>Latitude:</strong> {incident.latitude}
+            <strong>GPS:</strong> {incident.latitude}, {incident.longitude}
           </p>
 
           <p>
-            <strong>Longitude:</strong> {incident.longitude}
-          </p>
-
-          <p>
-            <strong>Detection time:</strong> {incident.timestamp}
+            <strong>Time:</strong> {incident.timestamp}
           </p>
 
           <a
@@ -2937,11 +3039,11 @@ export default function AccidentSimulation({
             rel="noreferrer"
             style={{ color: "#60a5fa" }}
           >
-            Open accident location in Google Maps
+            Open in Google Maps
           </a>
 
           <p role="status" style={{ marginBottom: 8 }}>
-            <strong>C++ backend:</strong> {incidentSaveState.message || "Submitting collision event..."}
+            <strong>Backend:</strong> {incidentSaveState.message || "Submitting collision event..."}
             {incidentSaveState.status === "error" && (
               <>
                 {" "}
@@ -2958,7 +3060,7 @@ export default function AccidentSimulation({
 
           {notificationDelivery && (
             <p role="status" style={{ marginBottom: 8 }}>
-              <strong>DEMO SMS status ({notificationDelivery.status}):</strong>{" "}
+              <strong>Test SMS ({notificationDelivery.status}):</strong>{" "}
               {notificationDelivery.message}
               {notificationDelivery.status === "error" && (
                 <>
@@ -2975,29 +3077,29 @@ export default function AccidentSimulation({
             </p>
           )}
 
-          <h3>Nearby Hospitals (within 6 km)</h3>
+          <h3>Nearby hospitals · 6 km</h3>
 
           {hospitalStatus === "loading" && (
-            <p>Searching OpenStreetMap...</p>
+            <p>Searching map…</p>
           )}
 
           {hospitalStatus === "error" && (
             <p role="alert">
-              Nearby hospital search failed: {hospitalError}
+              Hospital search failed: {hospitalError}
             </p>
           )}
 
           {hospitalStatus === "complete" && hospitals.length === 0 && (
             <p>
-              No hospitals found in the OpenStreetMap search results.
+              No hospitals found.
             </p>
           )}
           {hospitalRouteStatus === "loading" && (
-            <p>Finding a road route to the nearest listed hospital…</p>
+            <p>Finding hospital route…</p>
           )}
           {hospitalRouteStatus === "ready" && hospitalRoute && (
             <p role="status">
-              Road route to the nearest hospital:{" "}
+              Hospital route:{" "}
               {hospitalRoute.distanceKm.toFixed(2)} km, about{" "}
               {Math.max(
                 1,
@@ -3035,7 +3137,7 @@ export default function AccidentSimulation({
               )}
               {hospital.phone && (
                 <div style={{ color: "#fbbf24", fontSize: 12 }}>
-                  OSM-listed phone (not independently verified):{" "}
+                  OSM phone · unverified:{" "}
                   {hospital.phone}
                 </div>
               )}
@@ -3051,10 +3153,6 @@ export default function AccidentSimulation({
             </div>
           ))}
 
-          <p style={{ color: "#fbbf24", fontSize: 13 }}>
-            DEMO ONLY: These coordinates are from the map simulation, not
-            vehicle GPS. No emergency service or hospital is contacted.
-          </p>
         </div>
       )}
         </>

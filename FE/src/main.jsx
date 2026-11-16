@@ -10,10 +10,12 @@ import {
   Clock3,
   LayoutDashboard,
   MapPinned,
+  Menu,
   RefreshCw,
   Settings,
   ShieldCheck,
   Waypoints,
+  X,
 } from "lucide-react";
 import AIDetection from "./components/AIDetection";
 import DSAMonitoring from "./components/DSAMonitoring";
@@ -47,17 +49,17 @@ const NAV_ITEMS = [
 ];
 
 const PAGE_META = {
-  overview: ["Overview", "Evidence-led incident monitoring at a glance."],
-  live: ["Live Monitoring", "Connected sources and current processing state."],
-  ai: ["AI Accident Analysis Studio", "Video-based vehicle tracking and heuristic event review."],
-  incidents: ["Incident Center", "Backend incident locations and historical records."],
-  dsa: ["DSA Monitoring", "Live C++ event queues, processing, and history."],
-  analytics: ["Analytics & Insights", "Descriptive statistics computed from backend records."],
-  history: ["History & Reports", "Searchable records returned by the C++ backend."],
-  settings: ["Settings", "Service endpoints and available integrations."],
+  overview: ["Overview", "Incidents and system health."],
+  live: ["Live Monitoring", "Camera and service status."],
+  ai: ["AI Accident Analysis Studio", "Review traffic footage."],
+  incidents: ["Incident Center", "Map and filter incidents."],
+  dsa: ["DSA Monitoring", "Event queues and processing."],
+  analytics: ["Analytics & Insights", "Trends from recorded data."],
+  history: ["History & Reports", "Search and export incidents."],
+  settings: ["Settings", "Service status and integrations."],
   simulation: [
     "Multi-Vehicle Traffic",
-    "Multi-vehicle traffic with collision detection, C++ severity classification, and incident response.",
+    "Traffic simulation and incident response.",
   ],
 };
 
@@ -112,6 +114,7 @@ function ConnectionBadge({ label, status }) {
 
 function App() {
   const [activePage, setActivePage] = useState("overview");
+  const [navigationOpen, setNavigationOpen] = useState(false);
   const [dsaStatus, setDsaStatus] = useState(EMPTY_DSA_STATUS);
   const [dsaLoading, setDsaLoading] = useState(true);
   const [dsaError, setDsaError] = useState("");
@@ -129,6 +132,11 @@ function App() {
   const [processing, setProcessing] = useState(false);
   const [processFeedback, setProcessFeedback] = useState(null);
   const processLock = useRef(false);
+
+  const navigateToPage = (page) => {
+    setActivePage(page);
+    setNavigationOpen(false);
+  };
 
   const fetchDsaStatus = useCallback(async () => {
     setDsaLoading(true);
@@ -341,13 +349,24 @@ function App() {
     notificationError,
     vehicles,
     vehicleStatus,
-    onNavigate: setActivePage,
+    onNavigate: navigateToPage,
     onRefresh: refreshAll,
   };
 
   return (
     <div className="monitoring-app">
-      <aside className="app-sidebar">
+      {navigationOpen && (
+        <button
+          type="button"
+          className="sidebar-backdrop"
+          aria-label="Close navigation"
+          onClick={() => setNavigationOpen(false)}
+        />
+      )}
+      <aside
+        id="app-sidebar"
+        className={`app-sidebar ${navigationOpen ? "open" : ""}`}
+      >
         <div className="app-brand">
           <div className="app-brand-mark"><ShieldCheck size={23} /></div>
           <div>
@@ -363,7 +382,7 @@ function App() {
               key={id}
               type="button"
               className={`primary-nav-item ${activePage === id ? "active" : ""}`}
-              onClick={() => setActivePage(id)}
+              onClick={() => navigateToPage(id)}
               aria-current={activePage === id ? "page" : undefined}
             >
               <Icon size={18} aria-hidden="true" />
@@ -372,19 +391,26 @@ function App() {
           ))}
         </nav>
 
-        <div className="sidebar-system">
-          <ConnectionBadge label="C++ backend" status={backendStatus} />
-          <ConnectionBadge label="AI service" status={aiStatus.connection} />
-          <p>Academic monitoring prototype. No emergency dispatch is performed.</p>
-        </div>
       </aside>
 
       <main className="app-main">
         <header className="app-header">
-          <div>
-            <p className="breadcrumb">SAFEDRIVE <span>/</span> {title.toUpperCase()}</p>
-            <h1>{title}</h1>
-            <p className="page-subtitle">{subtitle}</p>
+          <div className="app-header-lead">
+            <button
+              type="button"
+              className="mobile-nav-toggle"
+              aria-label={navigationOpen ? "Close navigation" : "Open navigation"}
+              aria-controls="app-sidebar"
+              aria-expanded={navigationOpen}
+              onClick={() => setNavigationOpen((open) => !open)}
+            >
+              {navigationOpen ? <X size={19} /> : <Menu size={19} />}
+            </button>
+            <div className="app-header-copy">
+              <p className="breadcrumb">SAFEDRIVE <span>/</span> {title.toUpperCase()}</p>
+              <h1>{title}</h1>
+              <p className="page-subtitle">{subtitle}</p>
+            </div>
           </div>
           <div className="header-actions">
             <ConnectionBadge label="C++" status={backendStatus} />
@@ -434,7 +460,7 @@ function App() {
 
         <footer className="app-footer">
           <span>SafeDrive · Smart Accident Detection System</span>
-          <span>AI indicators are not independently verified accident confirmations.</span>
+          <span>AI indicators are not confirmed crashes.</span>
         </footer>
       </main>
     </div>

@@ -20,7 +20,8 @@ import {
   Waypoints,
 } from "lucide-react";
 import L from "leaflet";
-import { MapContainer, Marker, Popup, TileLayer } from "react-leaflet";
+import { MapContainer, Marker, Popup } from "react-leaflet";
+import DarkMapLayer from "./DarkMapLayer";
 import "leaflet/dist/leaflet.css";
 
 const CLASSIFICATIONS = [
@@ -198,7 +199,7 @@ export function OverviewPage({
     <div className="page-stack">
       <div className="truth-banner">
         <ShieldAlert size={18} />
-        <p><strong>Evidence note:</strong> totals are backend records, not independently verified crash counts. Video-only AI events remain indicators.</p>
+        <p>Backend records only · AI video events are unconfirmed indicators.</p>
         <button type="button" className="text-button" onClick={onRefresh}>Refresh data</button>
       </div>
 
@@ -207,7 +208,7 @@ export function OverviewPage({
           <article className={`metric-card ${metric.tone}`} key={metric.label}>
             <span>{metric.label}</span>
             <strong>{metric.value}</strong>
-            <small>{metric.label === "Total accident records" ? "C++ history endpoint" : "Current backend snapshot"}</small>
+            <small>{metric.label === "Total accident records" ? "Recorded" : "Current"}</small>
           </article>
         ))}
       </section>
@@ -215,7 +216,7 @@ export function OverviewPage({
       <div className="overview-columns">
         <PagePanel
           title="Recent backend activity"
-          description="Latest records returned by GET /api/accidents/history."
+          description="Latest recorded events."
           actions={<button type="button" className="text-button" onClick={() => onNavigate("history")}>View history</button>}
         >
           {historyLoading || historyError || recent.length === 0 ? (
@@ -241,7 +242,7 @@ export function OverviewPage({
           )}
         </PagePanel>
 
-        <PagePanel title="Service health" description="Connectivity is checked against the configured APIs.">
+        <PagePanel title="Service health" description="Connection status.">
           <div className="health-list">
             <div><span>C++ backend</span><strong className={`state-text ${backendStatus}`}>{backendStatus}</strong></div>
             <div><span>AI analysis service</span><strong className={`state-text ${aiStatus.connection}`}>{aiStatus.connection}</strong></div>
@@ -251,7 +252,7 @@ export function OverviewPage({
           </div>
           {backendStatus === "online" && !backendHealth?.persistent && (
             <p className="subtle-note" role="status">
-              Accident history is currently memory-only and will not survive a backend restart. Configure PostgreSQL to enable persistence.
+              History is in memory. Configure PostgreSQL for persistence.
             </p>
           )}
           {dsaError && <p className="subtle-note" role="status">Backend status error: {dsaError}</p>}
@@ -259,7 +260,7 @@ export function OverviewPage({
           {notificationError && <p className="subtle-note" role="status">{notificationError}</p>}
           {notificationStatus === "online" && notificationInfo?.smsTestMode && (
             <p className="subtle-note" role="status">
-              Notification test mode is enabled; no SMS is sent. Live demo alerts are Severe-only and use configured demo recipients.
+              Test mode · No SMS sent · Demo alerts are Severe-only.
             </p>
           )}
           <div className="page-quick-actions">
@@ -659,7 +660,7 @@ export function LiveMonitoringPage({
       <div className="live-source-grid">
         <PagePanel
           title="Live camera monitoring"
-          description="Browser webcam frames are analyzed by the local YOLO + ByteTrack AI service."
+          description="Local AI analyzes webcam frames."
           actions={
             <span className={`event-badge ${isRunning ? "severe" : "moderate"}`}>
               {isRunning
@@ -757,15 +758,13 @@ export function LiveMonitoringPage({
           </div>
 
           <p className="ai-disclaimer">
-            <AlertTriangle size={13} /> AI visual indicators are not proof of a
-            crash. Independent validation is required before treating an event
-            as a confirmed accident.
+            <AlertTriangle size={13} /> AI indicators are not confirmed crashes.
           </p>
         </PagePanel>
 
         <PagePanel
           title="Service and tracking status"
-          description="Registration data is not the same as active video tracks."
+          description="Registered vehicles are not active tracks."
           actions={
             <button
               type="button"
@@ -808,15 +807,15 @@ export function LiveMonitoringPage({
 
           <p className="subtle-note">
             {vehicleStatus === "online"
-              ? `${vehicles.length} registered vehicle record${vehicles.length === 1 ? "" : "s"} returned by the backend; these are not ByteTrack detections.`
-              : "The registered-vehicles endpoint is unavailable; no vehicle records are shown."}
+              ? `${vehicles.length} registered · Not live detections`
+              : "Vehicle records unavailable."}
           </p>
         </PagePanel>
       </div>
 
       <PagePanel
         title="Recent AI-assisted event records"
-        description="Potential and suspected classifications remain unconfirmed visual indicators."
+        description="Unconfirmed visual indicators."
       >
         {recentAiEvents.length === 0 ? (
           <div className="workspace-state">
@@ -922,11 +921,11 @@ export function IncidentCenterPage({ history, historyLoading, historyError, onRe
     <div className="page-stack">
       <div className="truth-banner">
         <MapPin size={18} />
-        <p>Markers use coordinates returned with backend records only. Browser GPS and camera location are not substituted for incident location.</p>
+        <p>Map uses backend incident coordinates only.</p>
       </div>
       <PagePanel
         title="Incident map"
-        description="OpenStreetMap tiles · markers include only valid backend incident coordinates."
+        description="Backend locations · OpenStreetMap."
         actions={<button type="button" className="icon-action compact" onClick={onRefresh}><RefreshCw size={15} /><span>Refresh</span></button>}
       >
         <div className="filter-toolbar">
@@ -942,7 +941,13 @@ export function IncidentCenterPage({ history, historyLoading, historyError, onRe
           <label>To
             <input type="date" value={endDate} onChange={(event) => setEndDate(event.target.value)} />
           </label>
-          <span className="filter-count">{filtered.length} located record{filtered.length === 1 ? "" : "s"}</span>
+          <span className="filter-count" role="status" aria-live="polite">
+            {historyLoading
+              ? "Loading records…"
+              : historyError
+                ? "Records unavailable"
+                : `${filtered.length} located record${filtered.length === 1 ? "" : "s"}`}
+          </span>
         </div>
         {historyLoading || historyError ? (
           <LoadingError loading={historyLoading} error={historyError} onRetry={onRefresh} />
@@ -950,7 +955,7 @@ export function IncidentCenterPage({ history, historyLoading, historyError, onRe
           <div className="location-unavailable">
             <MapPin size={25} />
             <strong>Location unavailable</strong>
-            <span>No backend incident record contains valid GPS coordinates. The map is not centered on a default location.</span>
+            <span>No incident coordinates are available.</span>
           </div>
         ) : filtered.length === 0 ? (
           <div className="location-unavailable"><span>No located records match the selected filters.</span></div>
@@ -961,12 +966,11 @@ export function IncidentCenterPage({ history, historyLoading, historyError, onRe
               center={[Number(filtered[0].latitude), Number(filtered[0].longitude)]}
               zoom={12}
               scrollWheelZoom
+              fadeAnimation={false}
+              zoomAnimation={false}
               className="incident-map"
             >
-              <TileLayer
-                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-              />
+              <DarkMapLayer />
               {filtered.map((event) => (
                 <Marker
                   key={event.id ?? event.eventId}
@@ -1024,7 +1028,7 @@ export function IncidentCenterPage({ history, historyLoading, historyError, onRe
         <PagePanel title="Nearby emergency facilities" description="No facility source is configured.">
           <div className="location-unavailable compact-state">
             <AlertCircle size={20} />
-            <span>Facility data unavailable. No hospitals or emergency services are shown without a verified facility data source.</span>
+            <span>No verified facility data available.</span>
           </div>
         </PagePanel>
       </div>
@@ -1055,13 +1059,32 @@ export function AnalyticsPage({ history, historyLoading, historyError, dsaStatus
     classification,
     count: history.filter((event) => event.eventType === classification).length,
   }));
+  const severitySlices = [
+    { key: "Severe", count: severityCounts.severe, color: "var(--workspace-red)" },
+    { key: "Moderate", count: severityCounts.moderate, color: "var(--workspace-amber)" },
+    { key: "Minor", count: severityCounts.minor, color: "var(--workspace-green)" },
+  ];
+  const classifiedSeverityCount = severitySlices.reduce(
+    (total, slice) => total + slice.count,
+    0
+  );
+  const severityCircumference = 2 * Math.PI * 43;
+  let severityChartOffset = 0;
+  const severityChartSegments = severitySlices.map((slice) => {
+    const length = classifiedSeverityCount
+      ? (slice.count / classifiedSeverityCount) * severityCircumference
+      : 0;
+    const segment = { ...slice, length, offset: severityChartOffset };
+    severityChartOffset += length;
+    return segment;
+  });
   const clusters = locationGroups(history);
 
   return (
     <div className="page-stack">
       <PagePanel
-        title="Recorded incident statistics"
-        description="All values are descriptive counts from the backend history response."
+        title="Incident statistics"
+        description="Counts from backend records."
         actions={<button type="button" className="icon-action compact" onClick={onRefresh}><RefreshCw size={15} /><span>Refresh</span></button>}
       >
         {historyLoading || historyError ? (
@@ -1076,13 +1099,59 @@ export function AnalyticsPage({ history, historyLoading, historyError, dsaStatus
               <article className="metric-card violet"><span>Pending</span><strong>{dsaLoading || dsaError ? "—" : dsaStatus.pendingEvents ?? dsaStatus.queueSize ?? "—"}</strong><small>Current C++ queue</small></article>
               <article className="metric-card blue"><span>Processed</span><strong>{dsaLoading || dsaError ? "—" : dsaStatus.totalProcessedEvents ?? dsaStatus.processedEvents ?? "—"}</strong><small>Current C++ process count</small></article>
             </div>
+            <section className="severity-distribution" aria-label="Incident severity distribution">
+              <div>
+                <span className="section-label">SEVERITY DISTRIBUTION</span>
+                <p>Classified records only</p>
+              </div>
+              {classifiedSeverityCount === 0 ? (
+                <div className="severity-chart-empty">No classified severity data</div>
+              ) : (
+                <div className="severity-chart-content">
+                  <svg
+                    className="severity-chart"
+                    viewBox="0 0 120 120"
+                    role="img"
+                    aria-label={`${severityCounts.severe} severe, ${severityCounts.moderate} moderate and ${severityCounts.minor} minor records`}
+                  >
+                    <g transform="rotate(-90 60 60)">
+                      <circle cx="60" cy="60" r="43" fill="none" stroke="#26394f" strokeWidth="12" />
+                      {severityChartSegments.map((segment) => (
+                        <circle
+                          key={segment.key}
+                          cx="60"
+                          cy="60"
+                          r="43"
+                          fill="none"
+                          stroke={segment.color}
+                          strokeWidth="12"
+                          strokeDasharray={`${segment.length} ${severityCircumference - segment.length}`}
+                          strokeDashoffset={-segment.offset}
+                        />
+                      ))}
+                    </g>
+                    <text x="60" y="58" className="severity-chart-total">{classifiedSeverityCount}</text>
+                    <text x="60" y="73" className="severity-chart-caption">records</text>
+                  </svg>
+                  <div className="severity-chart-legend">
+                    {severitySlices.map((slice) => (
+                      <div key={slice.key}>
+                        <i style={{ background: slice.color }} />
+                        <span>{slice.key}</span>
+                        <strong>{slice.count}</strong>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </section>
             {history.length === 0 && <div className="workspace-state"><FileWarning size={18} /><span>No records are available for analytics.</span></div>}
           </>
         )}
       </PagePanel>
 
       <div className="overview-columns">
-        <PagePanel title="Date trend" description="Counts grouped by calendar date where the timestamp contains a usable date.">
+        <PagePanel title="Date trend" description="Daily incident counts.">
           {dailyCounts.size === 0 ? <div className="workspace-state"><span>No dated records are available.</span></div> : (
             <div className="trend-list">
               {[...dailyCounts.entries()].sort(([a], [b]) => a.localeCompare(b)).slice(-14).map(([day, count]) => (
@@ -1095,7 +1164,7 @@ export function AnalyticsPage({ history, historyLoading, historyError, dsaStatus
             </div>
           )}
         </PagePanel>
-        <PagePanel title="AI event classifications" description="Classification labels are reported as stored; video-only analysis is not proof of a crash.">
+        <PagePanel title="AI event classifications" description="Stored labels · video analysis is unconfirmed.">
           <div className="classification-list">
             {classificationCounts.map(({ classification, count }) => (
               <div key={classification}><span>{classification.replaceAll("_", " ")}</span><strong>{count}</strong></div>
@@ -1108,7 +1177,7 @@ export function AnalyticsPage({ history, historyLoading, historyError, dsaStatus
       </div>
 
       <div className="overview-columns">
-        <PagePanel title="Available traffic indicators" description="Indicators are counts from event evidence, not proof of a collision.">
+        <PagePanel title="Traffic indicators" description="Counts from event evidence, not confirmed crashes.">
           {evidenceCounts.size === 0 ? (
             <div className="workspace-state"><Waypoints size={18} /><span>No event evidence metadata is available.</span></div>
           ) : (
@@ -1120,22 +1189,22 @@ export function AnalyticsPage({ history, historyLoading, historyError, dsaStatus
           )}
           <p className="subtle-note">
             {vehicleStatus === "online"
-              ? `Backend vehicle registrations available: ${vehicles.length}. This is not a live detector count.`
+              ? `${vehicles.length} registered vehicles · Not live detections`
               : "Vehicle registration counts unavailable."}
           </p>
         </PagePanel>
-        <PagePanel title="Predictive collision warning · preparation only" description="No predictive warnings are generated.">
+        <PagePanel title="Collision prediction" description="Not active · Requires:">
           <ul className="requirements-list">
-            <li>Camera geometry and real-world distance calibration</li>
-            <li>Validated speed and direction measurements over time</li>
-            <li>Reliable synchronized multi-vehicle track histories</li>
-            <li>Labeled evaluation footage and safety review before deployment</li>
+            <li>Calibrated camera geometry</li>
+            <li>Validated speed and direction</li>
+            <li>Synchronized vehicle tracks</li>
+            <li>Safety-reviewed evaluation footage</li>
           </ul>
-          <p className="subtle-note">Uncalibrated image-space motion is not sufficient for reliable time-to-collision estimates.</p>
+          <p className="subtle-note">Image motion alone cannot estimate collision time reliably.</p>
         </PagePanel>
       </div>
 
-      <PagePanel title="Approximate GPS clusters" description="Grouped in 0.01° cells; no road names or blackspots are inferred.">
+      <PagePanel title="Approximate GPS clusters" description="0.01° cells · Not road-level hotspots.">
         {clusters.length === 0 ? (
           <div className="workspace-state"><MapPin size={18} /><span>Insufficient repeated GPS records to identify a location cluster.</span></div>
         ) : (
@@ -1234,7 +1303,7 @@ export function HistoryPage({ history, historyLoading, historyError, onRefresh }
     <div className="page-stack">
       <PagePanel
         title="Incident history"
-        description="Search and filter backend records. Missing metadata is shown as unavailable."
+        description="Search and filter backend records."
         actions={
           <div className="panel-actions">
             <button type="button" className="icon-action compact" onClick={onRefresh}><RefreshCw size={15} /><span>Refresh</span></button>
@@ -1250,7 +1319,13 @@ export function HistoryPage({ history, historyLoading, historyError, onRefresh }
           <label>From<input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} /></label>
           <label>To<input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} /></label>
           <label>Sort<select value={sort} onChange={(event) => setSort(event.target.value)}><option value="newest">Timestamp · newest</option><option value="oldest">Timestamp · oldest</option><option value="impact-high">Impact · highest</option><option value="impact-low">Impact · lowest</option></select></label>
-          <span className="filter-count">{filtered.length} / {history.length} records</span>
+          <span className="filter-count" role="status" aria-live="polite">
+            {historyLoading
+              ? "Loading records…"
+              : historyError
+                ? "Records unavailable"
+                : `${filtered.length} / ${history.length} records`}
+          </span>
         </div>
         {historyLoading || historyError ? (
           <LoadingError loading={historyLoading} error={historyError} onRetry={onRefresh} />
@@ -1275,7 +1350,7 @@ export function HistoryPage({ history, historyLoading, historyError, onRefresh }
             </table>
           </div>
         )}
-        <p className="subtle-note">CSV export includes the filtered backend records only. No missing coordinates or confidence values are inferred.</p>
+        <p className="subtle-note">CSV contains filtered records only.</p>
       </PagePanel>
     </div>
   );
@@ -1296,31 +1371,31 @@ export function SettingsPage({
   useEffect(() => {
     let active = true;
     if (!navigator.permissions?.query) {
-      setGpsPermission("Permission status unavailable; location has not been requested.");
+      setGpsPermission("Permission unavailable · not requested.");
       return undefined;
     }
     navigator.permissions.query({ name: "geolocation" })
       .then((permission) => {
-        if (active) setGpsPermission(`Browser permission: ${permission.state}. This is not incident GPS.`);
+        if (active) setGpsPermission(`Permission: ${permission.state} · not incident GPS.`);
       })
       .catch(() => {
-        if (active) setGpsPermission("Permission status unavailable; location has not been requested.");
+        if (active) setGpsPermission("Permission unavailable · not requested.");
       });
     return () => { active = false; };
   }, []);
 
   const rows = [
     ["C++ backend", backendStatus, `${backendUrl}/api/health and ${backendUrl}/api/dsa/status`],
-    ["Accident persistence", backendStatus === "online" ? (backendHealth?.persistent ? "persistent" : "memory only") : "unavailable", backendHealth?.persistent ? "PostgreSQL" : "Records are not durable across backend restarts"],
+    ["Accident persistence", backendStatus === "online" ? (backendHealth?.persistent ? "persistent" : "memory only") : "unavailable", backendHealth?.persistent ? "PostgreSQL" : "Not persisted across restarts"],
     ["Python AI service", aiStatus.connection, `${aiUrl}/api/ai/status`],
-    ["Camera source", "not configured", "No live camera stream endpoint is configured"],
+    ["Camera source", "not configured", "No stream configured"],
     ["Browser location permission", "information only", gpsPermission],
-    ["Map tiles", "configured", "OpenStreetMap standard tile endpoint"],
+    ["Map tiles", "configured", "OpenStreetMap · dark-toned"],
     ["Notification service", notificationStatus, `${notificationUrl}/api/health`],
   ];
   return (
     <div className="page-stack">
-      <PagePanel title="Service configuration" description="Connection details are informational; no credentials or secret environment values are displayed.">
+      <PagePanel title="Service configuration" description="Configured services and status.">
         <div className="settings-list">
           {rows.map(([label, status, detail]) => (
             <article className="settings-row" key={label}>
@@ -1333,7 +1408,7 @@ export function SettingsPage({
       </PagePanel>
       <div className="truth-banner">
         <BellRing size={18} />
-        <p>The notification service reports connectivity only. This dashboard does not contact emergency services or claim that a provider delivered a message.</p>
+        <p>Connection status only · No emergency dispatch or delivery confirmation.</p>
       </div>
     </div>
   );

@@ -23,10 +23,12 @@ export default function DSAMonitoring({
         <div>
           <span className="section-label">DATA STRUCTURES</span>
           <h2>DSA Event Processing</h2>
-          <p>Live C++ event structures. Video-only AI events are indicators, not confirmed crashes.</p>
+          <p>Live C++ queues · AI events are unconfirmed indicators.</p>
         </div>
         <div className="panel-actions">
-          <span className="received-count">RECEIVED: {status.totalReceivedEvents ?? status.totalEnqueuedEvents ?? "—"}</span>
+          <span className="received-count">
+            RECEIVED: {loading || error ? "—" : status.totalReceivedEvents ?? status.totalEnqueuedEvents ?? "—"}
+          </span>
           <button type="button" className="icon-action compact" onClick={onRefresh} disabled={loading || processing}>
             <RotateCcw size={15} /><span>Refresh</span>
           </button>
@@ -64,7 +66,7 @@ export default function DSAMonitoring({
           )}
 
           <div className="dsa-structures-grid">
-            <StructurePanel title="FIFO Queue" purpose="First In, First Out · oldest pending event is processed first" count={queueEvents.length}>
+            <StructurePanel title="FIFO Queue" purpose="Oldest pending event first" count={queueEvents.length}>
               {queueEvents.length === 0 ? <EmptyStructure>Queue is empty</EmptyStructure> : (
                 <div className="dsa-event-list">
                   {queueEvents.map((event, index) => (
@@ -74,7 +76,7 @@ export default function DSAMonitoring({
               )}
             </StructurePanel>
 
-            <StructurePanel title="LIFO Stack" purpose="Last In, First Out · newest severe event is on top" count={stackEvents.length}>
+            <StructurePanel title="LIFO Stack" purpose="Newest severe event first" count={stackEvents.length}>
               {stackEvents.length === 0 ? <EmptyStructure>Stack is empty</EmptyStructure> : (
                 <div className="dsa-event-list">
                   {stackEvents.map((event, index) => (
@@ -84,7 +86,7 @@ export default function DSAMonitoring({
               )}
             </StructurePanel>
 
-            <StructurePanel title="Priority Queue" purpose="Backend severity rank and impact ordering; preserve C++ tie-break rules" count={priorityEvents.length}>
+            <StructurePanel title="Priority Queue" purpose="Severity and impact order" count={priorityEvents.length}>
               {priorityEvents.length === 0 ? <EmptyStructure>Priority queue is empty</EmptyStructure> : (
                 <div className="dsa-event-list">
                   {priorityEvents.map((event, index) => (
@@ -94,7 +96,7 @@ export default function DSAMonitoring({
               )}
             </StructurePanel>
 
-            <StructurePanel title="Vector / History" purpose="Backend arrival order · in-memory history limit applies" count={historyEvents.length}>
+            <StructurePanel title="Vector / History" purpose="Arrival order · limited history" count={historyEvents.length}>
               {historyEvents.length === 0 ? <EmptyStructure>History is empty</EmptyStructure> : (
                 <div className="dsa-event-list">
                   {historyEvents.map((event) => (
